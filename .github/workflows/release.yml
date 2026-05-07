@@ -133,6 +133,46 @@ jobs:
           # Per-row checksum file; the publish job merges them later.
           gh release upload "$TAG" --clobber "dist/checksums.txt#checksums-${NAME}-${TARGET}.txt"
 
+      # Phase D: emit an unsigned in-toto v1 statement for every artifact
+      # row. Sign with cosign keyless using the workflow's OIDC token,
+      # then upload alongside the artifact. Consumers verify via
+      # `cosign verify-attestation` against the porter App's identity.
+      - name: Emit attestation
+        if: matrix.kind == 'cli-binary'
+        env:
+          NAME: ${{ matrix.name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p attestations
+          porter attest "dist/${NAME}-${TARGET}.tar.gz" \
+            > "attestations/${NAME}-${TARGET}.intoto.json"
+
+      - name: Sign attestation (cosign)
+        if: matrix.kind == 'cli-binary'
+        uses: sigstore/cosign-installer@v3
+      - name: Sign + upload attestation
+        if: matrix.kind == 'cli-binary'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+          NAME: ${{ matrix.name }}
+          TARGET: ${{ matrix.target }}
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          # Wrap the in-toto statement in a DSSE envelope and sign with
+          # Fulcio (keyless OIDC). The .intoto.jsonl bundle holds both.
+          cosign attest-blob \
+            --predicate "attestations/${NAME}-${TARGET}.intoto.json" \
+            --type slsaprovenance \
+            --bundle "attestations/${NAME}-${TARGET}.bundle.json" \
+            --yes \
+            "dist/${NAME}-${TARGET}.tar.gz"
+          gh release upload "$TAG" --clobber \
+            "attestations/${NAME}-${TARGET}.intoto.json" \
+            "attestations/${NAME}-${TARGET}.bundle.json"
+
       # ----- oci-image ---------------------------------------------------
       - name: Set up Docker Buildx
         if: matrix.kind == 'oci-image'

@@ -1,0 +1,44 @@
+# GitHub App manifest for the porter privileged tagger.
+#
+# To install: visit https://github.com/organizations/<org>/settings/apps/new
+# and click "Use a manifest" — paste this file's JSON-equivalent into the
+# importer (the GitHub manifest API takes JSON, but we keep YAML in the
+# repo for review). Or use:
+#
+#   gh api -X POST /organizations/<org>/settings/apps/from-manifest \
+#     --input app/manifest.yml
+#
+# (gh accepts YAML and translates.) After install, generate a private key,
+# install on the repo, and store the App ID + key as repository secrets
+# `PORTER_APP_ID` and `PORTER_APP_PRIVATE_KEY`. The reusable workflows
+# pass these through `secrets.app-token` after exchanging them for an
+# installation token via the `tibdex/github-app-token` action or the
+# equivalent.
+
+name: porter
+description: |
+  Sole privileged tagger for porter-driven release lines. The repo
+  ruleset configured by `tools/install-ruleset.sh` blocks `v*` tag
+  pushes from any other identity, so a release can only originate from
+  this App's installation token.
+url: https://github.com/tractorbeamai/porter
+public: false
+default_events:
+  # We don't run a webhook handler in v1; events are listed for future
+  # use (Phase D verification flows may consume push/check_run events).
+  - push
+
+default_permissions:
+  # Push tag refs and (via the rolling Version PR) commits on a release
+  # branch. `contents: write` is the minimum that covers tag creation.
+  contents: write
+  # Open and update the rolling "Version Packages" PR.
+  pull_requests: write
+  # Read the workflow run state during release post-mortems.
+  actions: read
+  # Phase D: Sigstore keyless signing requires the App's installation
+  # token to be exchangeable for a workload identity OIDC token.
+  id_token: write
+  # Phase D: read-only access to attestation metadata stored as
+  # repository attestations.
+  attestations: write

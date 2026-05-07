@@ -5,9 +5,9 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use porter_core::{
-    BuildOpts, Bump, Changeset, ChangesetSet, Config, append_checksum, apply_next_version,
-    build_cli_binary, build_matrix, compute_next_version, current_version, render_for_actions,
-    slugify, write_changeset,
+    AttestInput, BuildOpts, Bump, Changeset, ChangesetSet, Config, append_checksum,
+    apply_next_version, build_cli_binary, build_matrix, build_statement, compute_next_version,
+    current_version, render_for_actions, sha256_hex, slugify, write_changeset,
 };
 
 #[derive(Parser)]
@@ -43,6 +43,8 @@ enum Command {
     /// Build a release artifact (currently `cli-binary` is implemented).
     #[command(subcommand)]
     Build(BuildCmd),
+    /// Emit an unsigned in-toto v1 Statement for an artifact (Phase D).
+    Attest(AttestArgs),
 }
 
 #[derive(Args)]
@@ -100,6 +102,39 @@ struct MatrixArgs {
 enum BuildCmd {
     /// Cross-compile a CLI binary, archive it, and write a checksum line.
     CliBinary(BuildCliBinaryArgs),
+}
+
+#[derive(Args)]
+struct AttestArgs {
+    /// Path to the artifact file to attest.
+    artifact: PathBuf,
+    /// Override the subject name in the statement (defaults to the file's basename).
+    #[arg(long)]
+    subject_name: Option<String>,
+    /// Source repo, e.g. `tractorbeamai/porter` (defaults to GITHUB_REPOSITORY).
+    #[arg(long, env = "GITHUB_REPOSITORY")]
+    source_repo: String,
+    /// Git ref of the source commit (defaults to GITHUB_REF).
+    #[arg(long, env = "GITHUB_REF")]
+    source_ref: String,
+    /// Source commit SHA (defaults to GITHUB_SHA).
+    #[arg(long, env = "GITHUB_SHA")]
+    source_sha: String,
+    /// CI run id (defaults to GITHUB_RUN_ID).
+    #[arg(long, env = "GITHUB_RUN_ID")]
+    run_id: String,
+    /// CI run attempt (defaults to GITHUB_RUN_ATTEMPT).
+    #[arg(long, env = "GITHUB_RUN_ATTEMPT")]
+    run_attempt: Option<String>,
+    /// Workflow ref string (defaults to GITHUB_WORKFLOW_REF).
+    #[arg(long, env = "GITHUB_WORKFLOW_REF")]
+    workflow_ref: Option<String>,
+    /// ISO-8601 timestamp the run started.
+    #[arg(long)]
+    started_on: Option<String>,
+    /// ISO-8601 timestamp the run finished. Defaults to now.
+    #[arg(long)]
+    finished_on: Option<String>,
 }
 
 #[derive(Args)]
@@ -173,6 +208,7 @@ fn run() -> Result<()> {
         Command::Build(b) => match b {
             BuildCmd::CliBinary(args) => cmd_build_cli_binary(&root, &config, args),
         },
+        Command::Attest(args) => cmd_attest(args),
     }
 }
 
@@ -416,6 +452,39 @@ fn cmd_build_cli_binary(root: &Path, config: &Config, args: BuildCliBinaryArgs) 
         writeln!(f, "tarball={}", artifact.tarball.display())?;
         writeln!(f, "sha256={}", artifact.sha256)?;
     }
+    Ok(())
+}
+
+fn cmd_attest(args: AttestArgs) -> Result<()> {
+    let sha256 = sha256_hex(&args.artifact)?;
+    let subject_name = args.subject_name.unwrap_or_else(|| {
+        args.artifact
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| args.artifact.display().to_string())
+    });
+
+    // The CLI's compile-time version doubles as the builder version
+    // recorded in the statement; consumers can pin policy against this.
+    let porter_version = env!("CARGO_PKG_VERSION").to_string();
+
+    let finished_on = args.finished_on.or_else(|| Some(porter_core::today_utc()));
+
+    let input = AttestInput {
+        subject_name,
+        subject_sha256: sha256,
+        source_repo: args.source_repo,
+        source_ref: args.source_ref,
+        source_sha: args.source_sha,
+        run_id: args.run_id,
+        run_attempt: args.run_attempt,
+        workflow_ref: args.workflow_ref,
+        started_on: args.started_on,
+        finished_on,
+        porter_version,
+    };
+    let stmt = build_statement(&input);
+    println!("{}", serde_json::to_string_pretty(&stmt)?);
     Ok(())
 }
 

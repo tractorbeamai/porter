@@ -17,6 +17,7 @@
 //!   changesets.
 
 pub mod apply;
+pub mod attest;
 pub mod build;
 pub mod changelog;
 pub mod changeset;
@@ -27,6 +28,7 @@ pub mod version;
 pub mod versioned_files;
 
 pub use apply::{ApplyResult, apply_next_version, current_version};
+pub use attest::{AttestInput, Statement, build_statement, sha256_hex};
 pub use build::{BuildArtifact, BuildOpts, append_checksum, build_cli_binary};
 pub use changelog::{prepend_section, render_section, today_utc};
 pub use changeset::{Bump, Changeset, ChangesetSet, write_changeset};
