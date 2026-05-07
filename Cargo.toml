@@ -33,3 +33,110 @@ clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 indoc = "2"
 tempfile = "3"
 pretty_assertions = "1"
+
+# Tree-wide lint policy.
+# https://doc.rust-lang.org/stable/cargo/reference/manifest.html#the-lints-section
+# Clippy lint index: https://rust-lang.github.io/rust-clippy/master.
+#
+# Posture is opt-out: warn on every shared rustc lint group plus clippy
+# all/pedantic/nursery/cargo/restriction, then allow individual lints below to
+# silence the contradictory or pure-noise ones. New restrictions belong here at
+# the workspace root, not on individual crates.
+[workspace.lints.rust]
+deprecated_safe = { level = "warn", priority = -1 }
+future_incompatible = { level = "warn", priority = -1 }
+keyword_idents = { level = "warn", priority = -1 }
+let_underscore = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+refining_impl_trait = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+unknown_or_malformed_diagnostic_attributes = { level = "warn", priority = -1 }
+unused = { level = "warn", priority = -1 }
+# `let _ = ...` for explicitly-discarded Results is idiomatic; the
+# alternative `drop(x)` is uglier without adding clarity.
+let_underscore_drop = "allow"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# `restriction` is not designed to be enabled wholesale - many of its lints are
+# contradictory or purely stylistic. Lower priority so the specific allows
+# below win.
+restriction = { level = "warn", priority = -2 }
+
+# Suppresses the meta-lint that complains about turning on the whole
+# restriction group above.
+blanket_clippy_restriction_lints = "allow"
+
+# `pedantic` group: noise we don't act on.
+# Module-name-prefixed types (e.g. `BuildArtifact` in `build` module) are
+# the deliberate API shape; renaming them would obscure their origin.
+module_name_repetitions = "allow"
+
+# `cargo` group: noise we don't act on.
+multiple_crate_versions = "allow"
+pub_with_shorthand = "allow"
+
+# `restriction` group: opinions we do not share.
+implicit_return = "allow"             # contradicts pedantic::needless_return
+question_mark_used = "allow"          # `?` is idiomatic
+single_call_fn = "allow"              # one-shot helpers are fine
+min_ident_chars = "allow"             # `i`, `x`, `n` are fine
+single_char_lifetime_names = "allow"  # `'a` is fine
+missing_docs_in_private_items = "allow"
+missing_inline_in_public_items = "allow"
+missing_trait_methods = "allow"
+arbitrary_source_item_ordering = "allow"
+pattern_type_mismatch = "allow"
+ref_patterns = "allow"
+pub_use = "allow"
+exhaustive_enums = "allow"            # we add variants freely
+exhaustive_structs = "allow"
+default_numeric_fallback = "allow"
+shadow_reuse = "allow"                # rebinding is idiomatic
+shadow_same = "allow"
+shadow_unrelated = "allow"
+# We are not no_std; `std` is the right import path.
+std_instead_of_alloc = "allow"
+std_instead_of_core = "allow"
+alloc_instead_of_core = "allow"
+mod_module_files = "allow"
+separated_literal_suffix = "allow"
+semicolon_outside_block = "allow"
+absolute_paths = "allow"
+# CLIs and bins legitimately print.
+print_stdout = "allow"
+print_stderr = "allow"
+# Em-dashes in user-facing strings (release tags, changelog headings)
+# are intentional typography; ASCII-only is a code-style concern that
+# bleeds into UX.
+non_ascii_literal = "allow"
+# Allow without `reason = "..."` is acceptable when the inline comment
+# already explains why; requiring a structured reason is busywork.
+allow_attributes_without_reason = "allow"
+# `out.push_str(&format!(...))` is the idiomatic builder for short
+# pieces of text. The suggested `write!(out, "...")?` form requires
+# Result handling that doesn't pull its weight when the function's
+# return type is `String`.
+format_push_string = "allow"
+
+# Scanner/parser code uses index arithmetic and slicing on inputs whose
+# bounds are checked locally one line earlier. Rewriting every `i + 1`
+# to `i.checked_add(1).ok_or(...)?` and every `body[a..b]` to
+# `body.get(a..b).context(...)?` would obscure intent without catching
+# real bugs. The hot paths are covered by unit tests; UB-via-arith
+# would be caught by debug-build overflow checks.
+arithmetic_side_effects = "allow"
+indexing_slicing = "allow"
+string_slice = "allow"
+# `let_underscore_drop` lives under the rustc `let_underscore` group;
+# clippy's `let_underscore_untyped` is its own pedantic lint.
+let_underscore_untyped = "allow"
+# `let _ = expr` to deliberately discard a Result is a canonical Rust
+# pattern; the suggested `drop(expr)` is uglier and equally explicit.
+let_underscore_must_use = "allow"
+
+[profile.release]
+strip = "symbols"

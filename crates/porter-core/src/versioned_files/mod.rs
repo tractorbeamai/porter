@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use semver::Version;
 
 use crate::config::VersionedFileSpec;
@@ -22,10 +22,19 @@ pub trait VersionedFile {
     fn path(&self) -> &Path;
 
     /// Read the current version from the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or its contents
+    /// don't match the expected format for the adapter.
     fn read_version(&self) -> Result<Version>;
 
     /// Rewrite the file with the given version. Must preserve formatting,
     /// comments, and unrelated keys wherever possible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or written.
     fn write_version(&self, version: &Version) -> Result<()>;
 }
 
@@ -33,6 +42,11 @@ pub trait VersionedFile {
 ///
 /// `root` is the directory the spec's `path` is resolved against (typically
 /// the directory containing `porter.toml`).
+///
+/// # Errors
+///
+/// Returns an error if the spec's regex pattern fails to compile or is
+/// missing the required `version` named group.
 pub fn load_versioned_file(
     root: &Path,
     spec: &VersionedFileSpec,

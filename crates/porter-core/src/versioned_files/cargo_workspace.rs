@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use semver::Version;
 use toml_edit::{DocumentMut, Item, Value};
 
@@ -16,7 +16,8 @@ pub struct CargoWorkspaceFile {
 }
 
 impl CargoWorkspaceFile {
-    pub fn new(path: PathBuf) -> Self {
+    #[must_use]
+    pub const fn new(path: PathBuf) -> Self {
         Self { path }
     }
 }

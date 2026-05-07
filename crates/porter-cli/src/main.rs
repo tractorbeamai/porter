@@ -1,8 +1,22 @@
-use std::io::{self, IsTerminal, Read, Write};
+// See porter-core's lib.rs for the rationale; same restriction-group
+// lints are universally exempt from test code here.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic_in_result_fn,
+        clippy::str_to_string,
+        clippy::missing_panics_doc,
+        clippy::missing_errors_doc,
+    )
+)]
+
+use std::io::{self, IsTerminal as _, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use porter_core::{
     AttestInput, BuildOpts, Bump, Changeset, ChangesetSet, Config, append_checksum,
@@ -83,10 +97,10 @@ enum ReleaseCmd {
 }
 
 #[derive(Args)]
-struct ReleaseTagArgs {}
+struct ReleaseTagArgs;
 
 #[derive(Args)]
-struct ReleaseNotesArgs {}
+struct ReleaseNotesArgs;
 
 #[derive(Args)]
 struct MatrixArgs {
@@ -111,22 +125,22 @@ struct AttestArgs {
     /// Override the subject name in the statement (defaults to the file's basename).
     #[arg(long)]
     subject_name: Option<String>,
-    /// Source repo, e.g. `tractorbeamai/porter` (defaults to GITHUB_REPOSITORY).
+    /// Source repo, e.g. `tractorbeamai/porter` (defaults to `GITHUB_REPOSITORY`).
     #[arg(long, env = "GITHUB_REPOSITORY")]
     source_repo: String,
-    /// Git ref of the source commit (defaults to GITHUB_REF).
+    /// Git ref of the source commit (defaults to `GITHUB_REF`).
     #[arg(long, env = "GITHUB_REF")]
     source_ref: String,
-    /// Source commit SHA (defaults to GITHUB_SHA).
+    /// Source commit SHA (defaults to `GITHUB_SHA`).
     #[arg(long, env = "GITHUB_SHA")]
     source_sha: String,
-    /// CI run id (defaults to GITHUB_RUN_ID).
+    /// CI run id (defaults to `GITHUB_RUN_ID`).
     #[arg(long, env = "GITHUB_RUN_ID")]
     run_id: String,
-    /// CI run attempt (defaults to GITHUB_RUN_ATTEMPT).
+    /// CI run attempt (defaults to `GITHUB_RUN_ATTEMPT`).
     #[arg(long, env = "GITHUB_RUN_ATTEMPT")]
     run_attempt: Option<String>,
-    /// Workflow ref string (defaults to GITHUB_WORKFLOW_REF).
+    /// Workflow ref string (defaults to `GITHUB_WORKFLOW_REF`).
     #[arg(long, env = "GITHUB_WORKFLOW_REF")]
     workflow_ref: Option<String>,
     /// ISO-8601 timestamp the run started.
@@ -173,9 +187,9 @@ enum BumpArg {
 impl From<BumpArg> for Bump {
     fn from(b: BumpArg) -> Self {
         match b {
-            BumpArg::Patch => Bump::Patch,
-            BumpArg::Minor => Bump::Minor,
-            BumpArg::Major => Bump::Major,
+            BumpArg::Patch => Self::Patch,
+            BumpArg::Minor => Self::Minor,
+            BumpArg::Major => Self::Major,
         }
     }
 }
@@ -198,13 +212,13 @@ fn run() -> Result<()> {
     let _ = config_path; // currently unused beyond resolution; kept for diagnostics
     match cli.command {
         Command::Add(args) => cmd_add(&root, &config, args),
-        Command::Status(args) => cmd_status(&root, &config, args),
-        Command::Version(args) => cmd_version(&root, &config, args),
+        Command::Status(args) => cmd_status(&root, &config, &args),
+        Command::Version(args) => cmd_version(&root, &config, &args),
         Command::Release(rel) => match rel {
             ReleaseCmd::Tag(_) => cmd_release_tag(&root, &config),
             ReleaseCmd::Notes(_) => cmd_release_notes(&root, &config),
         },
-        Command::Matrix(args) => cmd_matrix(&config, args),
+        Command::Matrix(args) => cmd_matrix(&config, &args),
         Command::Build(b) => match b {
             BuildCmd::CliBinary(args) => cmd_build_cli_binary(&root, &config, args),
         },
@@ -213,20 +227,18 @@ fn run() -> Result<()> {
 }
 
 fn resolve_config(explicit: Option<&Path>) -> Result<(PathBuf, Config, PathBuf)> {
-    let path = match explicit {
-        Some(p) => p.to_path_buf(),
-        None => {
-            let cwd = std::env::current_dir().context("getting cwd")?;
-            Config::discover(&cwd).context(
-                "could not find porter.toml — pass --config or run from inside a porter repo",
-            )?
-        }
+    let path = if let Some(p) = explicit {
+        p.to_path_buf()
+    } else {
+        let cwd = std::env::current_dir().context("getting cwd")?;
+        Config::discover(&cwd).context(
+            "could not find porter.toml — pass --config or run from inside a porter repo",
+        )?
     };
     let config = Config::load(&path)?;
     let root = path
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     Ok((path, config, root))
 }
 
@@ -239,7 +251,7 @@ fn cmd_add(root: &Path, config: &Config, args: AddArgs) -> Result<()> {
         Some(s) => s,
         None => prompt_summary()?,
     };
-    let summary = summary.trim().to_string();
+    let summary = summary.trim().to_owned();
     if summary.is_empty() {
         bail!("changeset summary must not be empty");
     }
@@ -251,7 +263,7 @@ fn cmd_add(root: &Path, config: &Config, args: AddArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_status(root: &Path, config: &Config, args: StatusArgs) -> Result<()> {
+fn cmd_status(root: &Path, config: &Config, args: &StatusArgs) -> Result<()> {
     let dir = root.join(&config.changesets.directory);
     let set = ChangesetSet::load_from_dir(&dir)?;
     let current = current_version(root, config)?;
@@ -301,7 +313,7 @@ fn format_changeset_json(c: &Changeset) -> serde_json::Value {
     })
 }
 
-fn cmd_version(root: &Path, config: &Config, args: VersionArgs) -> Result<()> {
+fn cmd_version(root: &Path, config: &Config, args: &VersionArgs) -> Result<()> {
     let result = apply_next_version(root, config, args.dry_run)?;
     let Some(r) = result else {
         println!("no pending changesets — nothing to do");
@@ -367,7 +379,7 @@ fn cmd_release_tag(root: &Path, config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn cmd_matrix(config: &Config, args: MatrixArgs) -> Result<()> {
+fn cmd_matrix(config: &Config, args: &MatrixArgs) -> Result<()> {
     let mut rows = build_matrix(config);
     if let Some(kind) = args.kind.as_deref() {
         rows.retain(|r| r.kind == kind);
@@ -396,7 +408,10 @@ fn cmd_build_cli_binary(root: &Path, config: &Config, args: BuildCliBinaryArgs) 
                 package,
                 targets,
             } => Some((name.clone(), package.clone(), targets.clone())),
-            _ => None,
+            ArtifactConfig::OciImage { .. }
+            | ArtifactConfig::HelmChart { .. }
+            | ArtifactConfig::NpmPackage { .. }
+            | ArtifactConfig::PythonWheel { .. } => None,
         })
         .collect();
 
@@ -458,15 +473,15 @@ fn cmd_build_cli_binary(root: &Path, config: &Config, args: BuildCliBinaryArgs) 
 fn cmd_attest(args: AttestArgs) -> Result<()> {
     let sha256 = sha256_hex(&args.artifact)?;
     let subject_name = args.subject_name.unwrap_or_else(|| {
-        args.artifact
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| args.artifact.display().to_string())
+        args.artifact.file_name().map_or_else(
+            || args.artifact.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
     });
 
     // The CLI's compile-time version doubles as the builder version
     // recorded in the statement; consumers can pin policy against this.
-    let porter_version = env!("CARGO_PKG_VERSION").to_string();
+    let porter_version = env!("CARGO_PKG_VERSION").to_owned();
 
     let finished_on = args.finished_on.or_else(|| Some(porter_core::today_utc()));
 
@@ -505,12 +520,11 @@ fn first_section(body: &str) -> Option<String> {
     let mut out = String::new();
     for line in lines.by_ref() {
         if line.starts_with("## ") {
-            if !started {
-                started = true;
-                continue;
-            } else {
+            if started {
                 break;
             }
+            started = true;
+            continue;
         }
         if started {
             out.push_str(line);
@@ -520,7 +534,7 @@ fn first_section(body: &str) -> Option<String> {
     if !started {
         return None;
     }
-    Some(out.trim_end().to_string())
+    Some(out.trim_end().to_owned())
 }
 
 fn prompt_bump() -> Result<Bump> {

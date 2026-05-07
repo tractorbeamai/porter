@@ -17,9 +17,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::{Digest as _, Sha256};
 
 pub const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 pub const PROVENANCE_PREDICATE_TYPE: &str = "https://slsa.dev/provenance/v1";
@@ -115,9 +115,20 @@ pub struct AttestInput {
     pub porter_version: String,
 }
 
+/// Build an in-toto v1 Statement with SLSA Build Provenance v1
+/// embedded as the predicate.
+///
+/// # Panics
+///
+/// Panics only if the SLSA provenance struct fails to serialize, which
+/// is impossible for the structured value we construct here (no
+/// non-string keys, no infinities, no NaN). The unwrap is documented
+/// rather than propagated so the function remains panic-free in
+/// practice and ergonomic at call sites.
+#[must_use]
 pub fn build_statement(input: &AttestInput) -> Statement {
     let mut digest = BTreeMap::new();
-    digest.insert("sha256".to_string(), input.subject_sha256.clone());
+    digest.insert("sha256".to_owned(), input.subject_sha256.clone());
 
     let subject = Subject {
         name: input.subject_name.clone(),
@@ -183,21 +194,37 @@ pub fn build_statement(input: &AttestInput) -> Statement {
         },
     };
 
+    // `serde_json::to_value` can only fail for `Serialize` impls that
+    // explicitly error (e.g. non-string map keys, non-finite floats);
+    // `SlsaProvenance` contains neither. The `# Panics` block above
+    // documents this invariant for callers.
+    #[expect(
+        clippy::expect_used,
+        reason = "documented in this fn's `# Panics`: SlsaProvenance has no fallible Serialize impls"
+    )]
+    let predicate = serde_json::to_value(&provenance).expect("SlsaProvenance always serializes");
+
     Statement {
         typ: STATEMENT_TYPE.into(),
         subject: vec![subject],
         predicate_type: PROVENANCE_PREDICATE_TYPE.into(),
-        predicate: serde_json::to_value(&provenance).expect("provenance serializes"),
+        predicate,
     }
 }
 
 /// Compute SHA-256 of a file as a lowercase hex string.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened or read.
 pub fn sha256_hex(path: &Path) -> Result<String> {
-    use std::io::Read;
+    use std::io::Read as _;
     let mut f = std::fs::File::open(path)
         .with_context(|| format!("opening {} for hashing", path.display()))?;
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
+    // Boxed to avoid a 64 KiB stack frame; the hot path of CI release
+    // builds runs this on small runners with constrained stacks.
+    let mut buf = vec![0_u8; 64 * 1024].into_boxed_slice();
     loop {
         let n = f.read(&mut buf)?;
         if n == 0 {
@@ -215,7 +242,7 @@ fn normalize_repo_url(s: &str) -> String {
     if s.starts_with("https://") || s.starts_with("git+https://") {
         s.trim_end_matches('/')
             .trim_start_matches("git+")
-            .to_string()
+            .to_owned()
     } else {
         format!("https://github.com/{}", s.trim_matches('/'))
     }
@@ -251,7 +278,7 @@ mod tests {
         assert_eq!(s.predicate_type, PROVENANCE_PREDICATE_TYPE);
         assert_eq!(s.subject.len(), 1);
         assert_eq!(
-            s.subject[0].digest.get("sha256").unwrap(),
+            &s.subject[0].digest["sha256"],
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
     }

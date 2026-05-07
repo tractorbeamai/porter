@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,7 +69,7 @@ pub enum VersionedFileSpec {
     },
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -183,17 +183,30 @@ fn default_changelog_path() -> PathBuf {
 impl Config {
     pub const FILENAME: &'static str = "porter.toml";
 
+    /// Read and parse a `porter.toml` from disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or its contents fail
+    /// to parse as a valid porter config.
     pub fn load(path: &Path) -> Result<Self> {
         let body = fs::read_to_string(path)
             .with_context(|| format!("reading porter config {}", path.display()))?;
         Self::from_toml(&body).with_context(|| format!("parsing porter config {}", path.display()))
     }
 
+    /// Parse a `porter.toml` body from a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the input is not valid TOML or fails schema
+    /// validation.
     pub fn from_toml(body: &str) -> Result<Self> {
         toml::from_str(body).context("invalid porter.toml")
     }
 
     /// Find `porter.toml` by walking up from `start`.
+    #[must_use]
     pub fn discover(start: &Path) -> Option<PathBuf> {
         let mut cur: Option<&Path> = Some(start);
         while let Some(dir) = cur {

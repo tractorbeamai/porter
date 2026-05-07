@@ -10,14 +10,14 @@
 //! attestation.
 
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use sha2::{Digest, Sha256};
+use sha2::{Digest as _, Sha256};
 
 /// Output of a `cli-binary` build.
 #[derive(Debug, Clone)]
@@ -35,6 +35,11 @@ pub struct BuildArtifact {
 /// `<binary>` (no `.exe` suffix added — Windows targets aren't supported
 /// in the initial cut). The archive layout matches what `setup-porter`
 /// expects.
+///
+/// # Errors
+///
+/// Returns an error if `cargo build` fails, the produced binary cannot
+/// be located, or the tarball cannot be written.
 pub fn build_cli_binary(opts: &BuildOpts) -> Result<BuildArtifact> {
     let BuildOpts {
         manifest_dir,
@@ -56,7 +61,7 @@ pub fn build_cli_binary(opts: &BuildOpts) -> Result<BuildArtifact> {
         .arg(manifest_dir.join("Cargo.toml"))
         .args(["--package", package, "--bin", binary, "--target", target])
         .status()
-        .with_context(|| format!("running {} build", cargo))?;
+        .with_context(|| format!("running {cargo} build"))?;
     if !status.success() {
         bail!("cargo build failed for {target} (exit {status})");
     }
@@ -100,6 +105,11 @@ pub struct BuildOpts {
 /// Append a checksum line for `path` to `checksums.txt` in the same
 /// directory, using the BSD-style `<sha>  <basename>` format that
 /// `sha256sum -c -` and `shasum -a 256 -c -` both accept.
+///
+/// # Errors
+///
+/// Returns an error if the artifact has no filename, or `checksums.txt`
+/// cannot be opened or written.
 pub fn append_checksum(dist: &Path, artifact: &BuildArtifact) -> Result<PathBuf> {
     let basename = artifact
         .tarball
@@ -133,7 +143,8 @@ fn sha256_hex_file(path: &Path) -> Result<String> {
     let mut f =
         fs::File::open(path).with_context(|| format!("opening {} for hashing", path.display()))?;
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
+    // Boxed to avoid a 64 KiB stack frame.
+    let mut buf = vec![0_u8; 64 * 1024].into_boxed_slice();
     loop {
         let n = f.read(&mut buf)?;
         if n == 0 {
@@ -164,13 +175,12 @@ mod tests {
 
         // Appending again adds a second line, doesn't replace.
         let art2 = BuildArtifact {
-            tarball: tarball.clone(),
+            tarball,
             sha256: "ef567890".into(),
         };
         append_checksum(dir.path(), &art2).unwrap();
         let body = fs::read_to_string(&p).unwrap();
-        let lines: Vec<_> = body.lines().collect();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(body.lines().count(), 2);
     }
 
     #[test]

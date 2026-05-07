@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Core library for porter — release-cutting tool for polyglot monorepos"
+readme = "../../README.md"
+keywords = ["release", "version", "monorepo", "changelog", "cargo"]
+categories = ["development-tools", "command-line-utilities"]
 
 [dependencies]
 anyhow.workspace = true
@@ -29,3 +32,6 @@ hex.workspace = true
 indoc.workspace = true
 tempfile.workspace = true
 pretty_assertions.workspace = true
+
+[lints]
+workspace = true

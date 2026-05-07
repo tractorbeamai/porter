@@ -1,23 +1,26 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use semver::Version;
 
 use super::VersionedFile;
 
-/// `package.json`. Updates the top-level `"version"` field via a targeted
-/// regex rewrite. We deliberately avoid `serde_json::Value` round-trips here
-/// because they reorder keys and discard formatting that npm tooling and
-/// humans both rely on; the same approach `pnpm version` and `npm version`
-/// take.
+/// `package.json` adapter.
+///
+/// Updates the top-level `"version"` field via a structural JSON walk that
+/// rewrites only the matched span. We deliberately avoid
+/// `serde_json::Value` round-trips because they reorder keys and discard
+/// formatting that npm tooling and humans both rely on; the same approach
+/// `pnpm version` and `npm version` take.
 #[derive(Debug)]
 pub struct PackageJsonFile {
     path: PathBuf,
 }
 
 impl PackageJsonFile {
-    pub fn new(path: PathBuf) -> Self {
+    #[must_use]
+    pub const fn new(path: PathBuf) -> Self {
         Self { path }
     }
 }
@@ -174,7 +177,7 @@ fn skip_balanced(bytes: &[u8], start: usize) -> Option<usize> {
         b'[' => b']',
         _ => return None,
     };
-    let mut depth = 0i32;
+    let mut depth = 0_i32;
     let mut i = start;
     while i < bytes.len() {
         match bytes[i] {

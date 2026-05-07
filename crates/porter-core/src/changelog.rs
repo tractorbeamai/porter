@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use semver::Version;
 use time::OffsetDateTime;
 use time::macros::format_description;
@@ -13,6 +13,7 @@ use crate::changeset::{Bump, ChangesetSet};
 /// Format mirrors the Keep a Changelog convention loosely, grouped by bump
 /// kind. Output is deterministic (no timestamps) when `today` is provided
 /// fixed; otherwise the current UTC date is used.
+#[must_use]
 pub fn render_section(version: &Version, today: &str, set: &ChangesetSet) -> String {
     let mut out = String::new();
     out.push_str(&format!("## {version} — {today}\n\n"));
@@ -54,6 +55,11 @@ pub fn render_section(version: &Version, today: &str, set: &ChangesetSet) -> Str
 
 /// Prepend a new section to the changelog file. Creates the file with a
 /// standard header if it doesn't yet exist.
+///
+/// # Errors
+///
+/// Returns an error if the changelog file cannot be written, or its
+/// parent directory cannot be created.
 pub fn prepend_section(path: &Path, section: &str) -> Result<()> {
     let header = "# Changelog\n\n";
     let existing = fs::read_to_string(path).unwrap_or_default();
@@ -67,12 +73,15 @@ pub fn prepend_section(path: &Path, section: &str) -> Result<()> {
         format!("{header}{section}{existing}")
     };
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).ok();
+        // Best-effort: if the parent already exists, this is a no-op;
+        // any real failure surfaces on the subsequent `fs::write`.
+        let _ = fs::create_dir_all(parent);
     }
     fs::write(path, body).with_context(|| format!("writing changelog {}", path.display()))?;
     Ok(())
 }
 
+#[must_use]
 pub fn today_utc() -> String {
     let fmt = format_description!("[year]-[month]-[day]");
     OffsetDateTime::now_utc()

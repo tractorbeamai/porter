@@ -1,17 +1,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use regex::Regex;
 use semver::Version;
 
 use super::VersionedFile;
 
-/// Helm `Chart.yaml`. Updates the top-level `version` and (optionally)
-/// `appVersion` keys. We use a targeted regex rewrite rather than a full
-/// YAML round-trip because YAML parsers reflow comments and quoting; charts
-/// are hand-edited and tend to have meaningful comments and field ordering
-/// we want to leave alone.
+/// Helm `Chart.yaml` adapter.
+///
+/// Updates the top-level `version` and (optionally) `appVersion` keys. We
+/// use a targeted regex rewrite rather than a full YAML round-trip because
+/// YAML parsers reflow comments and quoting; charts are hand-edited and
+/// tend to have meaningful comments and field ordering we want to leave
+/// alone.
 #[derive(Debug)]
 pub struct HelmChartFile {
     path: PathBuf,
@@ -19,7 +21,8 @@ pub struct HelmChartFile {
 }
 
 impl HelmChartFile {
-    pub fn new(path: PathBuf, update_app_version: bool) -> Self {
+    #[must_use]
+    pub const fn new(path: PathBuf, update_app_version: bool) -> Self {
         Self {
             path,
             update_app_version,
@@ -66,13 +69,29 @@ fn key_regex(key: &str) -> Regex {
         r#"(?m)^(?P<prefix>{key}\s*:[ \t]*)(?P<q>"|'|)(?P<value>[^"'\r\n#]*?)(?P<close>"|'|)(?P<space>[ \t]*)(?P<trailing>(?:#[^\r\n]*)?)$"#,
         key = regex::escape(key)
     );
+    // `key` was just escaped by `regex::escape`, so the only variable
+    // bytes in `pat` form a literal sequence; the rest is a static
+    // pattern we ship in this file. Compilation can't fail.
+    #[expect(
+        clippy::expect_used,
+        reason = "regex is built from a static template plus an escaped key; cannot fail"
+    )]
     Regex::new(&pat).expect("static regex compiles")
 }
 
 fn read_top_level_string(body: &str, key: &str) -> Result<String> {
     let re = key_regex(key);
     let cap = re.captures(body).context("key not found")?;
-    Ok(cap.name("value").unwrap().as_str().trim().to_string())
+    // The static regex always contains a `value` named group, so the
+    // capture group is guaranteed to be present whenever `captures`
+    // matched. Propagate as an error rather than `.unwrap()` to keep
+    // the function panic-free.
+    Ok(cap
+        .name("value")
+        .context("BUG: regex missing `value` named group")?
+        .as_str()
+        .trim()
+        .to_owned())
 }
 
 fn top_level_key_present(body: &str, key: &str) -> bool {
@@ -90,8 +109,8 @@ fn replace_top_level_string(body: &str, key: &str, new_value: &str) -> Result<St
         // Preserve quoting style and original spacing before any trailing
         // comment. Helm's Chart.yaml semver field is unambiguous quoted or
         // not; quoting is a stylistic choice we leave alone.
-        let space = caps.name("space").map(|m| m.as_str()).unwrap_or("");
-        let trailing = caps.name("trailing").map(|m| m.as_str()).unwrap_or("");
+        let space = caps.name("space").map_or("", |m| m.as_str());
+        let trailing = caps.name("trailing").map_or("", |m| m.as_str());
         format!("{prefix}{q}{new_value}{close}{space}{trailing}")
     });
     if !hit {

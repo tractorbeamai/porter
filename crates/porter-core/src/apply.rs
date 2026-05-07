@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use semver::Version;
 
 use crate::changelog::{prepend_section, render_section, today_utc};
@@ -23,6 +23,12 @@ pub struct ApplyResult {
 /// Read each versioned file and assert they all carry the same version. The
 /// "lowest of all the files" version is what we treat as the current
 /// release line.
+///
+/// # Errors
+///
+/// Returns an error if no `[[versioned_files]]` entries are configured,
+/// any file cannot be read or parsed, or files disagree on the current
+/// version.
 pub fn current_version(root: &Path, config: &Config) -> Result<Version> {
     if config.versioned_files.is_empty() {
         bail!("porter.toml has no [[versioned_files]] entries");
@@ -53,9 +59,16 @@ pub fn current_version(root: &Path, config: &Config) -> Result<Version> {
     Ok(first.clone())
 }
 
-/// Compute the next version, write it to every versioned file, prepend the
-/// rendered section to the changelog, and remove the consumed changeset
-/// files. If `dry_run` is true, no filesystem mutation occurs.
+/// Compute the next version and apply it tree-wide.
+///
+/// Writes the new version to every versioned file, prepends the rendered
+/// section to the changelog, and removes the consumed changeset files. If
+/// `dry_run` is true, no filesystem mutation occurs.
+///
+/// # Errors
+///
+/// Returns an error if changesets are malformed, the current version
+/// cannot be read, or any file write fails.
 pub fn apply_next_version(
     root: &Path,
     config: &Config,

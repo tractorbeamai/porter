@@ -4,6 +4,7 @@
 /// characters with a single dash, trims leading/trailing dashes, and caps
 /// length. Non-ASCII characters are dropped (changeset filenames are not
 /// user-facing).
+#[must_use]
 pub fn slugify(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut last_dash = true;
@@ -14,6 +15,9 @@ pub fn slugify(input: &str) -> String {
         } else if !last_dash && !out.is_empty() {
             out.push('-');
             last_dash = true;
+        } else {
+            // Skip: leading separator, or run of separators already
+            // collapsed into one dash.
         }
     }
     while out.ends_with('-') {

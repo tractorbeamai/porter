@@ -14,6 +14,12 @@ pub struct NextVersion {
 /// Compute the next version given the current version and a set of changesets.
 ///
 /// Returns `None` if the changeset set is empty (no bump).
+///
+/// # Errors
+///
+/// Currently infallible; the `Result` is reserved for future bump
+/// strategies (e.g. independent-mode aggregation that can detect
+/// conflicting bumps).
 pub fn compute_next_version(current: &Version, set: &ChangesetSet) -> Result<Option<NextVersion>> {
     let Some(bump) = set.aggregate_bump() else {
         return Ok(None);
@@ -26,7 +32,7 @@ pub fn compute_next_version(current: &Version, set: &ChangesetSet) -> Result<Opt
     }))
 }
 
-fn bumped(v: &Version, bump: Bump) -> Version {
+const fn bumped(v: &Version, bump: Bump) -> Version {
     match bump {
         Bump::Major => {
             // 0.x is treated specially: a "major" change before 1.0 is a minor

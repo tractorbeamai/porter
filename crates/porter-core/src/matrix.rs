@@ -70,6 +70,7 @@ impl MatrixRow {
     }
 }
 
+#[must_use]
 pub fn build_matrix(config: &Config) -> Vec<MatrixRow> {
     let mut rows = Vec::new();
     for art in &config.artifacts {
@@ -136,15 +137,16 @@ pub fn build_matrix(config: &Config) -> Vec<MatrixRow> {
 }
 
 /// Map a Rust target triple to a GitHub-hosted runner. Aarch64 macOS uses
-/// the M-series runners, x86_64 macOS still uses Intel macs (macos-13 is
+/// the M-series runners, `x86_64` macOS still uses Intel macs (macos-13 is
 /// the last Intel image).
 fn runner_for_target(target: &str) -> &'static str {
     match target {
-        "x86_64-unknown-linux-gnu" => "ubuntu-latest",
         "aarch64-unknown-linux-gnu" => "ubuntu-24.04-arm",
         "x86_64-apple-darwin" => "macos-13",
         "aarch64-apple-darwin" => "macos-14",
-        // Reasonable default; releases will fail loudly if this is wrong.
+        // x86_64 Linux is the default. Any unknown target also lands
+        // here so releases at least attempt to build; CI will fail
+        // loudly if the runner can't compile for the target.
         _ => "ubuntu-latest",
     }
 }
@@ -152,6 +154,7 @@ fn runner_for_target(target: &str) -> &'static str {
 /// Render the matrix as a JSON object suitable for `strategy.matrix`,
 /// i.e. `{"include": [...]}`. Empty matrices serialize to
 /// `{"include": []}` which GH Actions treats as a no-op.
+#[must_use]
 pub fn render_for_actions(rows: &[MatrixRow]) -> Value {
     serde_json::json!({ "include": rows })
 }

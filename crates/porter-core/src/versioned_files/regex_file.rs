@@ -1,19 +1,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use regex::Regex;
 use semver::Version;
 
 use super::VersionedFile;
 
-/// Generic regex-driven versioned file. The pattern must contain a named
-/// capture group `(?P<version>...)`. The matched text within that group is
-/// replaced with the new version on write; everything else is preserved.
+/// Generic regex-driven versioned file.
 ///
-/// The pattern is applied to the entire file contents (not line-by-line),
-/// so multiline matches are supported. If multiple matches exist, all are
-/// rewritten in lockstep.
+/// The pattern must contain a named capture group `(?P<version>...)`. The
+/// matched text within that group is replaced with the new version on
+/// write; everything else is preserved. The pattern is applied to the
+/// entire file contents (not line-by-line), so multiline matches are
+/// supported. If multiple matches exist, all are rewritten in lockstep.
 #[derive(Debug)]
 pub struct RegexFile {
     path: PathBuf,
@@ -22,6 +22,12 @@ pub struct RegexFile {
 }
 
 impl RegexFile {
+    /// Compile a regex pattern and pair it with a target file path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pattern fails to compile or is missing
+    /// the required `version` named capture group.
     pub fn new(path: PathBuf, pattern: &str) -> Result<Self> {
         let re =
             Regex::new(pattern).with_context(|| format!("invalid regex pattern: {pattern}"))?;
@@ -31,10 +37,11 @@ impl RegexFile {
         Ok(Self {
             path,
             re,
-            raw_pattern: pattern.to_string(),
+            raw_pattern: pattern.to_owned(),
         })
     }
 
+    #[must_use]
     pub fn pattern(&self) -> &str {
         &self.raw_pattern
     }
@@ -55,7 +62,12 @@ impl VersionedFile for RegexFile {
                 self.raw_pattern
             )
         })?;
-        let raw = cap.name("version").unwrap().as_str();
+        // The `version` named group is required by `RegexFile::new`, so
+        // its presence is a structural invariant of any matching capture.
+        let raw = cap
+            .name("version")
+            .context("BUG: matched regex without `version` named group")?
+            .as_str();
         // Strip a leading `v` if present so callers can pin against either
         // `v0.6.0` or `0.6.0` text in the file.
         let stripped = raw.strip_prefix('v').unwrap_or(raw);
@@ -66,24 +78,29 @@ impl VersionedFile for RegexFile {
     fn write_version(&self, version: &Version) -> Result<()> {
         let body = fs::read_to_string(&self.path)
             .with_context(|| format!("reading {}", self.path.display()))?;
+        // We use `captures_iter` + manual splice rather than
+        // `replace_all`'s closure form because the closure can't
+        // propagate `Result`, and we'd otherwise have to `unwrap()`
+        // structural invariants of the regex match.
+        let mut new_body = String::with_capacity(body.len());
+        let mut last_end = 0_usize;
         let mut hit = false;
-        let new_body = self.re.replace_all(&body, |caps: &regex::Captures<'_>| {
+        for caps in self.re.captures_iter(&body) {
             hit = true;
-            let full = caps.get(0).unwrap().as_str();
-            let m = caps.name("version").unwrap();
+            let m = caps
+                .name("version")
+                .context("BUG: matched regex without `version` named group")?;
+            new_body.push_str(
+                body.get(last_end..m.start())
+                    .context("BUG: regex match start outside string bounds")?,
+            );
             let raw = m.as_str();
-            let prefix = if raw.starts_with('v') { "v" } else { "" };
-            let replacement = format!("{prefix}{version}");
-            // Splice the replacement back into the full match so we keep
-            // any surrounding text inside the regex.
-            let start = m.start() - caps.get(0).unwrap().start();
-            let end = m.end() - caps.get(0).unwrap().start();
-            let mut out = String::with_capacity(full.len() + replacement.len());
-            out.push_str(&full[..start]);
-            out.push_str(&replacement);
-            out.push_str(&full[end..]);
-            out
-        });
+            if raw.starts_with('v') {
+                new_body.push('v');
+            }
+            new_body.push_str(&version.to_string());
+            last_end = m.end();
+        }
         if !hit {
             bail!(
                 "{} did not match regex {:?}",
@@ -91,7 +108,11 @@ impl VersionedFile for RegexFile {
                 self.raw_pattern
             );
         }
-        fs::write(&self.path, new_body.as_ref())
+        new_body.push_str(
+            body.get(last_end..)
+                .context("BUG: last regex match end outside string bounds")?,
+        );
+        fs::write(&self.path, &new_body)
             .with_context(|| format!("writing {}", self.path.display()))?;
         Ok(())
     }

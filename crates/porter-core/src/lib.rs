@@ -1,3 +1,21 @@
+// Restriction-group lints that are universally exempted from test code:
+// tests are allowed to panic on `Result::Err`, slice into known-good
+// vectors, do unchecked arithmetic, and bind throwaway results. These
+// conflict with the workspace's `clippy::restriction = warn` policy
+// only inside `#[cfg(test)]` blocks; production code remains under the
+// strict policy.
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic_in_result_fn,
+        clippy::str_to_string,
+        clippy::missing_panics_doc,
+        clippy::missing_errors_doc,
+    )
+)]
+
 //! porter-core — release-cutting machinery for polyglot monorepos.
 //!
 //! The crate is split into independently testable layers:

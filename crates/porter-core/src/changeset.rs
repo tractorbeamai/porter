@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -13,15 +13,16 @@ pub enum Bump {
 }
 
 impl Bump {
-    pub fn max(a: Bump, b: Bump) -> Bump {
-        if a >= b { a } else { b }
-    }
+    // `Ord::max(self, other)` is auto-derived from the variant order
+    // (`Patch < Minor < Major`); aggregation uses it directly. We deliberately
+    // do not define an inherent `max` to avoid colliding with the trait method.
 
-    pub fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
-            Bump::Patch => "patch",
-            Bump::Minor => "minor",
-            Bump::Major => "major",
+            Self::Patch => "patch",
+            Self::Minor => "minor",
+            Self::Major => "major",
         }
     }
 }
@@ -39,6 +40,14 @@ pub struct ChangesetSet {
 }
 
 impl ChangesetSet {
+    /// Load every `*.md` file in `dir` (excluding `README.md`) as a
+    /// changeset. Missing directory yields an empty set rather than an
+    /// error so a brand-new repo with no `.changeset/` is well-formed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a file in the directory cannot be read, or
+    /// any file's frontmatter fails to parse.
     pub fn load_from_dir(dir: &Path) -> Result<Self> {
         if !dir.exists() {
             return Ok(Self::default());
@@ -66,16 +75,26 @@ impl ChangesetSet {
     }
 
     pub fn aggregate_bump(&self) -> Option<Bump> {
-        self.changesets.iter().map(|c| c.bump).reduce(Bump::max)
+        self.changesets.iter().map(|c| c.bump).reduce(Ord::max)
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.changesets.is_empty()
     }
 
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.changesets.len()
     }
+}
+
+#[derive(Deserialize)]
+struct Frontmatter {
+    #[serde(rename = "release")]
+    release: Option<String>,
+    #[serde(rename = "bump")]
+    bump: Option<String>,
 }
 
 fn parse_changeset(path: &Path, body: &str) -> Result<Changeset> {
@@ -83,15 +102,7 @@ fn parse_changeset(path: &Path, body: &str) -> Result<Changeset> {
     let rest = body.strip_prefix("---").context("missing leading ---")?;
     let end = rest.find("\n---").context("missing trailing ---")?;
     let frontmatter = &rest[..end];
-    let summary = rest[end + 4..].trim().to_string();
-
-    #[derive(Deserialize)]
-    struct Frontmatter {
-        #[serde(rename = "release")]
-        release: Option<String>,
-        #[serde(rename = "bump")]
-        bump: Option<String>,
-    }
+    let summary = rest[end + 4..].trim().to_owned();
 
     let fm: Frontmatter =
         serde_yaml::from_str(frontmatter).context("failed to parse changeset frontmatter")?;
@@ -113,6 +124,12 @@ fn parse_changeset(path: &Path, body: &str) -> Result<Changeset> {
     })
 }
 
+/// Write a new changeset Markdown file at `<dir>/<slug>.md`.
+///
+/// # Errors
+///
+/// Returns an error if `dir` cannot be created or the file cannot be
+/// written.
 pub fn write_changeset(dir: &Path, slug: &str, bump: Bump, summary: &str) -> Result<PathBuf> {
     fs::create_dir_all(dir).with_context(|| format!("creating changeset dir {}", dir.display()))?;
     let path = dir.join(format!("{slug}.md"));
