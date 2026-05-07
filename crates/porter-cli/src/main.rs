@@ -5,8 +5,9 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use porter_core::{
-    Bump, Changeset, ChangesetSet, Config, apply_next_version, compute_next_version,
-    current_version, slugify, write_changeset,
+    BuildOpts, Bump, Changeset, ChangesetSet, Config, append_checksum, apply_next_version,
+    build_cli_binary, build_matrix, compute_next_version, current_version, render_for_actions,
+    slugify, write_changeset,
 };
 
 #[derive(Parser)]
@@ -37,6 +38,11 @@ enum Command {
     /// Cut a release: tag, build artifacts, push, and create the GitHub Release.
     #[command(subcommand)]
     Release(ReleaseCmd),
+    /// Emit the GitHub Actions job matrix derived from `[[artifacts]]`.
+    Matrix(MatrixArgs),
+    /// Build a release artifact (currently `cli-binary` is implemented).
+    #[command(subcommand)]
+    Build(BuildCmd),
 }
 
 #[derive(Args)]
@@ -80,6 +86,48 @@ struct ReleaseTagArgs {}
 #[derive(Args)]
 struct ReleaseNotesArgs {}
 
+#[derive(Args)]
+struct MatrixArgs {
+    /// Filter to a specific artifact kind (e.g. `oci-image`, `cli-binary`).
+    #[arg(long)]
+    kind: Option<String>,
+    /// Print compact JSON instead of pretty-printed.
+    #[arg(long)]
+    compact: bool,
+}
+
+#[derive(Subcommand)]
+enum BuildCmd {
+    /// Cross-compile a CLI binary, archive it, and write a checksum line.
+    CliBinary(BuildCliBinaryArgs),
+}
+
+#[derive(Args)]
+struct BuildCliBinaryArgs {
+    /// `[[artifacts]]` `name` to look up. Defaults to the only entry if
+    /// there's exactly one.
+    #[arg(long)]
+    name: Option<String>,
+    /// Override the `[[artifacts]].package` value.
+    #[arg(long)]
+    package: Option<String>,
+    /// Override the binary name. Defaults to the artifact `name`.
+    #[arg(long)]
+    binary: Option<String>,
+    /// Rust target triple (e.g. `x86_64-unknown-linux-gnu`).
+    #[arg(long)]
+    target: String,
+    /// Output directory for the tarball. Created if missing.
+    #[arg(long, default_value = "dist")]
+    dist: PathBuf,
+    /// Append a checksum line to `<dist>/checksums.txt`.
+    #[arg(long, default_value_t = true)]
+    checksum: bool,
+    /// `cargo` executable to invoke.
+    #[arg(long, default_value = "cargo", env = "CARGO")]
+    cargo: String,
+}
+
 #[derive(Copy, Clone, ValueEnum)]
 enum BumpArg {
     Patch,
@@ -120,6 +168,10 @@ fn run() -> Result<()> {
         Command::Release(rel) => match rel {
             ReleaseCmd::Tag(_) => cmd_release_tag(&root, &config),
             ReleaseCmd::Notes(_) => cmd_release_notes(&root, &config),
+        },
+        Command::Matrix(args) => cmd_matrix(&config, args),
+        Command::Build(b) => match b {
+            BuildCmd::CliBinary(args) => cmd_build_cli_binary(&root, &config, args),
         },
     }
 }
@@ -276,6 +328,94 @@ fn cmd_version(root: &Path, config: &Config, args: VersionArgs) -> Result<()> {
 fn cmd_release_tag(root: &Path, config: &Config) -> Result<()> {
     let v = current_version(root, config)?;
     println!("{}{}", config.release.tag_prefix, v);
+    Ok(())
+}
+
+fn cmd_matrix(config: &Config, args: MatrixArgs) -> Result<()> {
+    let mut rows = build_matrix(config);
+    if let Some(kind) = args.kind.as_deref() {
+        rows.retain(|r| r.kind == kind);
+    }
+    let value = render_for_actions(&rows);
+    let body = if args.compact {
+        serde_json::to_string(&value)?
+    } else {
+        serde_json::to_string_pretty(&value)?
+    };
+    println!("{body}");
+    Ok(())
+}
+
+fn cmd_build_cli_binary(root: &Path, config: &Config, args: BuildCliBinaryArgs) -> Result<()> {
+    use porter_core::ArtifactConfig;
+    // Find the matching `[[artifacts]]` block. If neither --name nor a
+    // single cli-binary entry can identify it, error out — we don't want
+    // to silently build the wrong target.
+    let cli_binaries: Vec<_> = config
+        .artifacts
+        .iter()
+        .filter_map(|a| match a {
+            ArtifactConfig::CliBinary {
+                name,
+                package,
+                targets,
+            } => Some((name.clone(), package.clone(), targets.clone())),
+            _ => None,
+        })
+        .collect();
+
+    let (name, package_default) = match args.name {
+        Some(n) => {
+            let m = cli_binaries
+                .iter()
+                .find(|(name, _, _)| name == &n)
+                .with_context(|| format!("no [[artifacts]] cli-binary named {n:?}"))?;
+            (m.0.clone(), m.1.clone())
+        }
+        None => match cli_binaries.as_slice() {
+            [] => bail!("porter.toml has no [[artifacts]] of kind cli-binary"),
+            [only] => (only.0.clone(), only.1.clone()),
+            _ => {
+                bail!("porter.toml has multiple cli-binary artifacts; pass --name to disambiguate")
+            }
+        },
+    };
+
+    let package = args.package.unwrap_or(package_default);
+    let binary = args.binary.unwrap_or_else(|| name.clone());
+    let dist = if args.dist.is_absolute() {
+        args.dist.clone()
+    } else {
+        root.join(&args.dist)
+    };
+
+    let opts = BuildOpts {
+        manifest_dir: root.to_path_buf(),
+        package,
+        binary,
+        target: args.target.clone(),
+        dist: dist.clone(),
+        cargo: args.cargo,
+    };
+    let artifact = build_cli_binary(&opts)?;
+    println!(
+        "built {} (sha256: {})",
+        artifact.tarball.display(),
+        artifact.sha256
+    );
+    if args.checksum {
+        let p = append_checksum(&dist, &artifact)?;
+        println!("appended to {}", p.display());
+    }
+
+    if let Ok(out) = std::env::var("GITHUB_OUTPUT") {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(out)?;
+        writeln!(f, "tarball={}", artifact.tarball.display())?;
+        writeln!(f, "sha256={}", artifact.sha256)?;
+    }
     Ok(())
 }
 

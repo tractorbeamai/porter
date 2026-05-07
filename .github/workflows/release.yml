@@ -1,12 +1,15 @@
 name: porter / release
 
-# Reusable workflow consumer repos call once a Version PR has merged. Tags
-# the release commit, runs the artifact build matrix declared by the
-# consumer, and creates the GitHub Release with the changelog body.
+# Reusable workflow for consumer repos. The flow:
 #
-# Tier 1 / Phase B: tag + GitHub Release + simple artifact dispatch. The
-# attestation/signing layer (Phase D) and admission-control (Phase E) ride
-# on top of this same workflow as additional jobs.
+#   1. tag         — push the `vX.Y.Z` tag (porter App identity).
+#   2. plan        — `porter matrix` emits a job matrix from porter.toml.
+#   3. build (×N)  — fan out across artifact rows.
+#   4. publish     — collect everything into the GitHub Release.
+#
+# Phase B implements: cli-binary builds end-to-end, plus skeleton
+# job steps for oci-image / helm-chart that shell out to standard tools.
+# Phase D adds attestation as additional steps inside `build`.
 
 on:
   workflow_call:
@@ -20,8 +23,8 @@ on:
       app-token:
         description: |
           Token used to push the release tag. Must be a porter App
-          installation token; the repo ruleset will reject tag pushes from
-          any other identity.
+          installation token; the repo ruleset will reject tag pushes
+          from any other identity.
         required: true
 
 permissions:
@@ -34,7 +37,8 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.cut.outputs.tag }}
-      notes: ${{ steps.cut.outputs.notes }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      has-artifacts: ${{ steps.matrix.outputs.has-artifacts }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -52,23 +56,165 @@ jobs:
           set -euo pipefail
           tag=$(porter release tag)
           if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "tag $tag already exists; nothing to do"
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "tag $tag already exists; skipping tag push"
+          else
+            git config user.name "porter[bot]"
+            git config user.email "porter[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "Release $tag"
+            git push origin "$tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - id: matrix
+        run: |
+          set -euo pipefail
+          matrix=$(porter matrix --compact)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          rows=$(echo "$matrix" | jq '.include | length')
+          if [[ "$rows" -gt 0 ]]; then
+            echo "has-artifacts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-artifacts=false" >> "$GITHUB_OUTPUT"
           fi
 
-          git config user.name "porter[bot]"
-          git config user.email "porter[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "Release $tag"
-          git push origin "$tag"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.app-token }}
+          TAG: ${{ steps.cut.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
+          else
+            notes_file=$(mktemp)
+            porter release notes > "$notes_file" || true
+            gh release create "$TAG" --title "$TAG" --notes-file "$notes_file"
+          fi
 
-          notes_file=$(mktemp)
-          porter release notes > "$notes_file"
-          gh release create "$tag" --title "$tag" --notes-file "$notes_file"
+  build:
+    needs: tag
+    if: needs.tag.outputs.has-artifacts == 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.tag.outputs.matrix) }}
+    permissions:
+      contents: write
+      packages: write
+      id-token: write  # reserved for Phase D Sigstore OIDC
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
 
-          {
-            echo "tag=$tag"
-            echo "notes<<__EOF__"
-            cat "$notes_file"
-            echo "__EOF__"
-          } >> "$GITHUB_OUTPUT"
+      - uses: tractorbeamai/porter/actions/setup-porter@v0
+        with:
+          version: ${{ inputs.porter-version }}
+
+      # ----- cli-binary --------------------------------------------------
+      - name: Add Rust target
+        if: matrix.kind == 'cli-binary'
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build cli-binary
+        if: matrix.kind == 'cli-binary'
+        run: porter build cli-binary --name ${{ matrix.name }} --target ${{ matrix.target }}
+
+      - name: Upload cli-binary tarball
+        if: matrix.kind == 'cli-binary'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+          NAME: ${{ matrix.name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" --clobber "dist/${NAME}-${TARGET}.tar.gz"
+          # Per-row checksum file; the publish job merges them later.
+          gh release upload "$TAG" --clobber "dist/checksums.txt#checksums-${NAME}-${TARGET}.txt"
+
+      # ----- oci-image ---------------------------------------------------
+      - name: Set up Docker Buildx
+        if: matrix.kind == 'oci-image'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push image
+        if: matrix.kind == 'oci-image'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          platforms: ${{ matrix.platforms }}
+          tags: ${{ matrix.registry }}:${{ needs.tag.outputs.tag }}
+          provenance: false  # Phase D will issue our own attestations
+
+      # ----- helm-chart --------------------------------------------------
+      - name: Package & push Helm chart
+        if: matrix.kind == 'helm-chart'
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          CHART: ${{ matrix.chart }}
+          REGISTRY: ${{ matrix.registry }}
+        run: |
+          set -euo pipefail
+          # Strip the `v` prefix so `helm package --version` accepts it.
+          version="${TAG#v}"
+          helm package "$CHART" --version "$version" --app-version "$version" -d dist
+          pkg=$(ls dist/*.tgz | head -1)
+          helm push "$pkg" "$REGISTRY"
+
+      # ----- npm-package -------------------------------------------------
+      - name: Publish npm package
+        if: matrix.kind == 'npm-package'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          REGISTRY: ${{ matrix.registry }}
+        working-directory: ${{ matrix.path }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$NPM_TOKEN" ]]; then
+            echo "::error::NPM_TOKEN secret not set; pass it via the calling workflow's secrets" >&2
+            exit 1
+          fi
+          echo "//${REGISTRY#https://}/:_authToken=$NPM_TOKEN" > .npmrc
+          npm publish --access public
+
+      # ----- python-wheel ------------------------------------------------
+      - name: Build & publish Python wheel
+        if: matrix.kind == 'python-wheel'
+        run: |
+          set -euo pipefail
+          pipx install maturin
+          (cd "${{ matrix.path }}" && maturin build --release --out ../dist)
+
+  publish:
+    needs: [tag, build]
+    if: always() && needs.tag.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+
+      - name: Merge per-row checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Pull every per-row checksums-<id>.txt asset from the release,
+          # concatenate, and re-upload as the canonical checksums.txt the
+          # setup-porter action verifies against.
+          if gh release view "$TAG" --json assets --jq '.assets[].name' \
+              | grep -q '^checksums-'; then
+            for asset in $(gh release view "$TAG" --json assets \
+                --jq '.assets[].name' | grep '^checksums-'); do
+              gh release download "$TAG" --pattern "$asset" --dir dist --clobber
+            done
+            cat dist/checksums-*.txt | sort -u > dist/checksums.txt
+            gh release upload "$TAG" --clobber dist/checksums.txt
+          fi
