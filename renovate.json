@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["local>tractorbeamai/.github:renovate-config"],
+  "packageRules": [
+    {
+      "description": "Auto-merge low-risk updates by labeling for bulldozer. policy-bot's `renovate dependency PR` rule already handles the approval.",
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "addLabels": ["merge-when-ready"]
+    }
+  ]
+}
