@@ -1,0 +1,23 @@
+[package]
+name = "porter-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "porter CLI — release-cutting tool for polyglot monorepos"
+
+[[bin]]
+name = "porter"
+path = "src/main.rs"
+
+[dependencies]
+porter-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+indoc.workspace = true

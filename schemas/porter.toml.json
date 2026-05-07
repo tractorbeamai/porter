@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/tractorbeamai/porter/main/schemas/porter.toml.json",
+  "title": "porter.toml",
+  "description": "Per-repo configuration for the porter release tool.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "changesets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "type": "string",
+          "default": ".changeset",
+          "description": "Directory holding pending changeset Markdown files."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["single"],
+          "default": "single",
+          "description": "All packages move together at one version."
+        }
+      }
+    },
+    "versioned_files": {
+      "type": "array",
+      "description": "Files whose embedded version string moves in lockstep with the release version.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["type", "path"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "const": "cargo-workspace" },
+              "path": { "type": "string", "description": "Path to a workspace Cargo.toml." }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type", "path"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "const": "helm-chart" },
+              "path": { "type": "string", "description": "Path to a Helm Chart.yaml." },
+              "update_app_version": {
+                "type": "boolean",
+                "default": true,
+                "description": "Also update the chart's `appVersion`."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type", "path"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "const": "package-json" },
+              "path": { "type": "string", "description": "Path to a package.json." }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["type", "path", "pattern"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "const": "regex" },
+              "path": { "type": "string" },
+              "pattern": {
+                "type": "string",
+                "description": "Regex with a named capture group `(?P<version>...)`. The matched substring is replaced on write."
+              }
+            }
+          }
+        ]
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Per-artifact build/publish entries consumed by the release workflow.",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["kind", "name", "context", "dockerfile", "registry"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "oci-image" },
+              "name": { "type": "string" },
+              "context": { "type": "string" },
+              "dockerfile": { "type": "string" },
+              "registry": { "type": "string" },
+              "platforms": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": ["linux/amd64", "linux/arm64"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "name", "chart", "registry"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "helm-chart" },
+              "name": { "type": "string" },
+              "chart": { "type": "string" },
+              "registry": { "type": "string" }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "name", "path"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "npm-package" },
+              "name": { "type": "string" },
+              "path": { "type": "string" },
+              "registry": { "type": "string", "default": "https://registry.npmjs.org" }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "name", "path"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "python-wheel" },
+              "name": { "type": "string" },
+              "path": { "type": "string" }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind", "name", "package"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "cli-binary" },
+              "name": { "type": "string" },
+              "package": { "type": "string", "description": "Cargo package name." },
+              "targets": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "signing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "type": "string",
+          "enum": ["sigstore", "none"],
+          "default": "sigstore"
+        },
+        "fulcio_url": { "type": "string", "default": "https://fulcio.sigstore.dev" },
+        "rekor_url": { "type": "string", "default": "https://rekor.sigstore.dev" }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "required": ["layout"],
+      "additionalProperties": false,
+      "properties": {
+        "layout": {
+          "type": "string",
+          "description": "Path to an in-toto v1 layout file."
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tag_prefix": { "type": "string", "default": "v" },
+        "changelog": { "type": "string", "default": "CHANGELOG.md" }
+      }
+    }
+  }
+}

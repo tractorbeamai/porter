@@ -1,0 +1,74 @@
+name: porter / release
+
+# Reusable workflow consumer repos call once a Version PR has merged. Tags
+# the release commit, runs the artifact build matrix declared by the
+# consumer, and creates the GitHub Release with the changelog body.
+#
+# Tier 1 / Phase B: tag + GitHub Release + simple artifact dispatch. The
+# attestation/signing layer (Phase D) and admission-control (Phase E) ride
+# on top of this same workflow as additional jobs.
+
+on:
+  workflow_call:
+    inputs:
+      porter-version:
+        description: porter CLI version to install.
+        required: false
+        type: string
+        default: latest
+    secrets:
+      app-token:
+        description: |
+          Token used to push the release tag. Must be a porter App
+          installation token; the repo ruleset will reject tag pushes from
+          any other identity.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.cut.outputs.tag }}
+      notes: ${{ steps.cut.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.app-token }}
+
+      - uses: tractorbeamai/porter/actions/setup-porter@v0
+        with:
+          version: ${{ inputs.porter-version }}
+
+      - id: cut
+        env:
+          GH_TOKEN: ${{ secrets.app-token }}
+        run: |
+          set -euo pipefail
+          tag=$(porter release tag)
+          if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "tag $tag already exists; nothing to do"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "porter[bot]"
+          git config user.email "porter[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag"
+          git push origin "$tag"
+
+          notes_file=$(mktemp)
+          porter release notes > "$notes_file"
+          gh release create "$tag" --title "$tag" --notes-file "$notes_file"
+
+          {
+            echo "tag=$tag"
+            echo "notes<<__EOF__"
+            cat "$notes_file"
+            echo "__EOF__"
+          } >> "$GITHUB_OUTPUT"

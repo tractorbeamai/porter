@@ -1,0 +1,20 @@
+"$schema" = "./schemas/porter.toml.json"
+
+[changesets]
+directory = ".changeset"
+mode = "single"
+
+# Version-bearing files for porter itself. Just the Cargo workspace for
+# now — the workspace.package.version cascades to every member crate.
+[[versioned_files]]
+type = "cargo-workspace"
+path = "Cargo.toml"
+
+[release]
+tag_prefix = "v"
+changelog = "CHANGELOG.md"
+
+# Phase A ships only the CLI. The release workflow's artifact matrix
+# (Phase B+) will land alongside the action-side glue, not as porter.toml
+# entries — there's exactly one artifact (the CLI) and CI handles it
+# directly, since porter publishes itself.

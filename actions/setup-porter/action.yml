@@ -1,0 +1,96 @@
+name: Setup porter
+description: Download and install the porter CLI at a pinned version.
+author: Tractorbeam
+
+inputs:
+  version:
+    description: |
+      porter release tag (e.g. `v0.6.0`) or `latest`. Pinning is strongly
+      recommended; `latest` resolves at runtime via the GitHub API.
+    required: false
+    default: latest
+  install-dir:
+    description: Directory to install the binary into.
+    required: false
+    default: ${{ runner.tool_cache }}/porter
+  github-token:
+    description: |
+      Token used to call the GitHub API. Default `GITHUB_TOKEN` is fine for
+      a public porter release; pass a PAT only when consuming a private
+      mirror.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  version:
+    description: The resolved version that was installed.
+    value: ${{ steps.resolve.outputs.version }}
+  path:
+    description: Absolute path of the installed binary.
+    value: ${{ steps.install.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REQ_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        if [[ "$REQ_VERSION" == "latest" ]]; then
+          # Resolve `latest` via the GitHub Releases API rather than the
+          # /releases/latest endpoint, since that endpoint hides prereleases
+          # and we want explicit control later.
+          version=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/tractorbeamai/porter/releases/latest" \
+            | grep -m1 '"tag_name"' \
+            | sed -E 's/.*"tag_name"\s*:\s*"([^"]+)".*/\1/')
+        else
+          version="$REQ_VERSION"
+        fi
+        if [[ -z "$version" ]]; then
+          echo "::error::could not resolve porter version" >&2
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - id: install
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        VERSION: ${{ steps.resolve.outputs.version }}
+        INSTALL_DIR: ${{ inputs.install-dir }}
+      run: |
+        set -euo pipefail
+
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64)   target="x86_64-unknown-linux-gnu" ;;
+          Linux-ARM64) target="aarch64-unknown-linux-gnu" ;;
+          macOS-X64)   target="x86_64-apple-darwin" ;;
+          macOS-ARM64) target="aarch64-apple-darwin" ;;
+          *) echo "::error::unsupported runner $RUNNER_OS-$RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+
+        asset="porter-${target}.tar.gz"
+        url="https://github.com/tractorbeamai/porter/releases/download/${VERSION}/${asset}"
+        sums_url="https://github.com/tractorbeamai/porter/releases/download/${VERSION}/checksums.txt"
+
+        mkdir -p "$INSTALL_DIR"
+        cd "$INSTALL_DIR"
+
+        curl -fsSL --retry 5 --retry-connrefused -o "$asset" "$url"
+        curl -fsSL --retry 5 --retry-connrefused -o checksums.txt "$sums_url"
+
+        # Verify against the release-published checksum file. Required —
+        # we never install an asset whose checksum we can't confirm.
+        grep " $asset\$" checksums.txt | sha256sum -c -
+
+        tar -xzf "$asset"
+        chmod +x porter
+        echo "path=$INSTALL_DIR/porter" >> "$GITHUB_OUTPUT"
+        echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+        "$INSTALL_DIR/porter" --version
