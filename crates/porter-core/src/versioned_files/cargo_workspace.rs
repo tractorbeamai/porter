@@ -155,6 +155,44 @@ mod tests {
     }
 
     #[test]
+    fn read_errors_on_invalid_toml() {
+        let (_dir, f) = write_and_read("[workspace\nversion = \"0.1.0\"\n");
+        let err = f.read_version().unwrap_err().to_string();
+        assert!(
+            err.contains("invalid Cargo.toml") || err.to_ascii_lowercase().contains("toml"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn read_errors_on_non_string_version() {
+        let body = indoc! {"
+            [workspace.package]
+            version = 1
+        "};
+        let (_dir, f) = write_and_read(body);
+        let err = f.read_version().unwrap_err().to_string();
+        assert!(
+            err.contains("workspace.package"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn read_errors_on_workspace_typo() {
+        let body = indoc! {r#"
+            [package.workspace]
+            version = "0.5.2"
+        "#};
+        let (_dir, f) = write_and_read(body);
+        let err = f.read_version().unwrap_err().to_string();
+        assert!(
+            err.contains("workspace.package"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn missing_field_errors_clearly() {
         let body = indoc! {r#"
             [workspace]

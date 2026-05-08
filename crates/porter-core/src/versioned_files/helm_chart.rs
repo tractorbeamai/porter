@@ -255,6 +255,23 @@ mod tests {
     }
 
     #[test]
+    fn update_app_version_true_with_no_app_version_field_is_noop() {
+        // When `update_app_version` is true but the chart has no
+        // `appVersion:` line, write_version should still rewrite `version:`
+        // and silently skip the missing key rather than erroring out.
+        let body = indoc! {"
+            apiVersion: v2
+            name: example
+            version: 0.1.0
+        "};
+        let (_d, f) = setup(body);
+        f.write_version(&Version::new(0, 2, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert!(after.contains("version: 0.2.0"));
+        assert!(!after.contains("appVersion"));
+    }
+
+    #[test]
     fn does_not_match_nested_version_key() {
         // Ensure we don't rewrite e.g. `dependencies[].version`.
         let body = indoc! {r#"

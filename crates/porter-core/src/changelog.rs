@@ -159,6 +159,26 @@ mod tests {
     }
 
     #[test]
+    fn prepend_handles_changelog_with_non_standard_header() {
+        // If the existing changelog has a hand-rolled header we don't
+        // recognize, we shouldn't lose its content — the new section is
+        // inserted between our standard header and whatever was there.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("CHANGELOG.md");
+        let custom = "# Project history\n\nFreeform notes about the project.\n";
+        fs::write(&path, custom).unwrap();
+        let section = "## 0.2.0 — 2026-05-07\n\n- New thing.\n\n";
+        prepend_section(&path, section).unwrap();
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(body.starts_with("# Changelog\n\n## 0.2.0"));
+        assert!(
+            body.contains("# Project history"),
+            "must not lose the original header; got:\n{body}"
+        );
+        assert!(body.contains("Freeform notes about the project."));
+    }
+
+    #[test]
     fn prepend_inserts_above_existing_sections() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("CHANGELOG.md");

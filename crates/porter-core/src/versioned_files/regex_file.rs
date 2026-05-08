@@ -218,6 +218,34 @@ mod tests {
     }
 
     #[test]
+    fn pattern_with_multiline_flag_matches_per_line() {
+        let body = indoc! {r#"
+            tag = "v0.5.2"
+            other = "v0.5.2"
+        "#};
+        let (_d, f) = setup(body, r#"(?m)^tag\s*=\s*"(?P<version>v[0-9.]+)""#);
+        f.write_version(&Version::new(0, 6, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert!(after.contains(r#"tag = "v0.6.0""#));
+        assert!(after.contains(r#"other = "v0.5.2""#));
+    }
+
+    #[test]
+    fn pattern_matching_across_newline() {
+        let body = indoc! {r#"
+            chart_revision =
+              "v0.5.2"
+        "#};
+        let (_d, f) = setup(
+            body,
+            r#"(?s)chart_revision\s*=\s*"(?P<version>v[0-9.]+)""#,
+        );
+        f.write_version(&Version::new(0, 6, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert!(after.contains(r#""v0.6.0""#));
+    }
+
+    #[test]
     fn pattern_without_named_group_errors() {
         let dir = TempDir::new().unwrap();
         let err = RegexFile::new(dir.path().join("x"), r#"version = "[0-9.]+""#)

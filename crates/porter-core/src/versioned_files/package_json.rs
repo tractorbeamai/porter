@@ -355,6 +355,36 @@ mod tests {
     }
 
     #[test]
+    fn does_not_match_version_inside_array() {
+        // A top-level array element (or any nested structure) appearing
+        // before `version` must not be mistaken for the top-level value.
+        let body = indoc! {r#"
+            {
+              "name": "example",
+              "keywords": ["release", "version", "porter"],
+              "version": "0.1.0"
+            }
+        "#};
+        let (_d, f) = setup(body);
+        f.write_version(&Version::new(0, 2, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert!(after.contains(r#""version": "0.2.0""#));
+        assert!(after.contains(r#""keywords": ["release", "version", "porter"]"#));
+    }
+
+    #[test]
+    fn read_errors_on_non_string_version() {
+        let (_d, f) = setup(indoc! {r#"
+            {
+              "name": "example",
+              "version": 1.0
+            }
+        "#});
+        let err = f.read_version().unwrap_err().to_string();
+        assert!(err.contains("version"), "unexpected error: {err}");
+    }
+
+    #[test]
     fn missing_version_errors() {
         let (_d, f) = setup(indoc! {r#"
             {
