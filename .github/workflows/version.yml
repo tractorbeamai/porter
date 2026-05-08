@@ -58,7 +58,7 @@ jobs:
           set -euo pipefail
           status_json=$(porter status --json)
           echo "$status_json"
-          next=$(echo "$status_json" | sed -n 's/.*"next":[[:space:]]*"\([^"]*\)".*/\1/p')
+          next=$(echo "$status_json" | jq -r '.next // empty')
           if [[ -z "$next" || "$next" == "null" ]]; then
             echo "no pending changesets; nothing to do"
             echo "skip=true" >> "$GITHUB_OUTPUT"

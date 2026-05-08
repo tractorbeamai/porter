@@ -64,9 +64,15 @@ fn key_regex(key: &str) -> Regex {
     // indentation (so we don't pick up nested `version:` inside a
     // `dependencies:` list, which is indented). `space` captures the
     // whitespace between value and any trailing comment so we can preserve
-    // it verbatim on rewrite.
+    // it verbatim on rewrite. `value` requires at least one non-space byte
+    // so an empty value (`version: ` with nothing after) doesn't match —
+    // the read path then surfaces a clear "key not found" instead of
+    // silently writing into a bogus span. `cr` absorbs the optional `\r`
+    // of a CRLF line ending so the rebuild can preserve it verbatim;
+    // without this capture, `$` (which matches before `\n`) would refuse
+    // to match because the preceding `\r` is not consumed by any group.
     let pat = format!(
-        r#"(?m)^(?P<prefix>{key}\s*:[ \t]*)(?P<q>"|'|)(?P<value>[^"'\r\n#]*?)(?P<close>"|'|)(?P<space>[ \t]*)(?P<trailing>(?:#[^\r\n]*)?)$"#,
+        r#"(?m)^(?P<prefix>{key}\s*:[ \t]*)(?P<q>"|'|)(?P<value>[^"'\r\n#\s][^"'\r\n#]*?)(?P<close>"|'|)(?P<space>[ \t]*)(?P<trailing>(?:#[^\r\n]*)?)(?P<cr>\r?)$"#,
         key = regex::escape(key)
     );
     // `key` was just escaped by `regex::escape`, so the only variable
@@ -111,7 +117,8 @@ fn replace_top_level_string(body: &str, key: &str, new_value: &str) -> Result<St
         // not; quoting is a stylistic choice we leave alone.
         let space = caps.name("space").map_or("", |m| m.as_str());
         let trailing = caps.name("trailing").map_or("", |m| m.as_str());
-        format!("{prefix}{q}{new_value}{close}{space}{trailing}")
+        let cr = caps.name("cr").map_or("", |m| m.as_str());
+        format!("{prefix}{q}{new_value}{close}{space}{trailing}{cr}")
     });
     if !hit {
         bail!("key {key:?} not present");

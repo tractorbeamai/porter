@@ -33,7 +33,10 @@ impl VersionedFile for PackageJsonFile {
     fn read_version(&self) -> Result<Version> {
         let body = fs::read_to_string(&self.path)
             .with_context(|| format!("reading {}", self.path.display()))?;
-        let v: serde_json::Value = serde_json::from_str(&body)
+        // npm tooling tolerates a UTF-8 BOM at the head of package.json; we
+        // shouldn't be stricter than the ecosystem.
+        let json = body.strip_prefix('\u{feff}').unwrap_or(&body);
+        let v: serde_json::Value = serde_json::from_str(json)
             .with_context(|| format!("invalid JSON in {}", self.path.display()))?;
         let v = v.get("version").and_then(|v| v.as_str()).with_context(|| {
             format!(
@@ -76,7 +79,14 @@ struct Span {
 /// occurrences of the same key inside arrays or sub-objects are skipped.
 fn find_top_level_string_span(body: &str, key: &str) -> Option<Span> {
     let bytes = body.as_bytes();
-    let mut i = skip_ws(bytes, 0);
+    // Skip a UTF-8 BOM if present; the rebuild splices unmodified bytes
+    // around the rewritten span, so the BOM is preserved verbatim.
+    let bom_len = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+    let mut i = skip_ws(bytes, bom_len);
     if i >= bytes.len() || bytes[i] != b'{' {
         return None;
     }

@@ -47,8 +47,7 @@ runs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/tractorbeamai/porter/releases/latest" \
-            | grep -m1 '"tag_name"' \
-            | sed -E 's/.*"tag_name"\s*:\s*"([^"]+)".*/\1/')
+            | jq -r .tag_name)
         else
           version="$REQ_VERSION"
         fi
@@ -87,7 +86,10 @@ runs:
 
         # Verify against the release-published checksum file. Required —
         # we never install an asset whose checksum we can't confirm.
-        grep " $asset\$" checksums.txt | sha256sum -c -
+        # Two-space anchor matches the BSD format porter writes
+        # (`<sha>  <basename>`); `shasum -a 256` works on both Linux and
+        # macOS runners (`sha256sum` is Linux-only).
+        grep "  $asset\$" checksums.txt | shasum -a 256 -c -
 
         tar -xzf "$asset"
         chmod +x porter
