@@ -198,6 +198,56 @@ mod tests {
     }
 
     #[test]
+    fn writes_rejects_empty_value() {
+        let body = indoc! {r#"
+            apiVersion: v2
+            name: example
+            version:
+            appVersion: "1.0.0"
+        "#};
+        let (_d, f) = setup(body);
+        assert!(f.write_version(&Version::new(0, 6, 0)).is_err());
+    }
+
+    #[test]
+    fn reads_single_quoted_value() {
+        let body = indoc! {"
+            apiVersion: v2
+            name: example
+            version: '0.1.0'
+            appVersion: '0.1.0'
+        "};
+        let (_d, f) = setup(body);
+        assert_eq!(f.read_version().unwrap(), Version::new(0, 1, 0));
+    }
+
+    #[test]
+    fn writes_preserves_single_quotes() {
+        let body = indoc! {"
+            apiVersion: v2
+            name: example
+            version: '0.1.0'
+            appVersion: '0.1.0'
+        "};
+        let (_d, f) = setup(body);
+        f.write_version(&Version::new(0, 2, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert!(after.contains("version: '0.2.0'"));
+        assert!(after.contains("appVersion: '0.2.0'"));
+    }
+
+    #[test]
+    fn roundtrips_crlf_line_endings() {
+        let body = "apiVersion: v2\r\nname: example\r\nversion: 0.1.0\r\nappVersion: \"0.1.0\"\r\n";
+        let (_d, f) = setup(body);
+        f.write_version(&Version::new(0, 2, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert!(after.contains("version: 0.2.0\r\n"));
+        assert!(after.contains("appVersion: \"0.2.0\"\r\n"));
+        assert_eq!(f.read_version().unwrap(), Version::new(0, 2, 0));
+    }
+
+    #[test]
     fn does_not_match_nested_version_key() {
         // Ensure we don't rewrite e.g. `dependencies[].version`.
         let body = indoc! {r#"

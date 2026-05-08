@@ -271,6 +271,80 @@ mod tests {
     }
 
     #[test]
+    fn reads_with_escaped_quote_in_earlier_string() {
+        let (_d, f) = setup(indoc! {r#"
+            {
+              "name": "example",
+              "description": "say \"hi\"",
+              "version": "0.1.0"
+            }
+        "#});
+        assert_eq!(f.read_version().unwrap(), Version::new(0, 1, 0));
+    }
+
+    #[test]
+    fn writes_when_version_is_last_field_no_trailing_comma() {
+        let body = indoc! {r#"
+            {
+              "name": "example",
+              "version": "0.1.0"
+            }
+        "#};
+        let (_d, f) = setup(body);
+        f.write_version(&Version::new(0, 2, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert!(after.contains(r#""version": "0.2.0""#));
+        let parsed: serde_json::Value = serde_json::from_str(&after).unwrap();
+        assert_eq!(parsed["version"], "0.2.0");
+    }
+
+    #[test]
+    fn roundtrips_crlf_line_endings() {
+        let body = "{\r\n  \"name\": \"example\",\r\n  \"version\": \"0.1.0\"\r\n}\r\n";
+        let (_d, f) = setup(body);
+        f.write_version(&Version::new(0, 2, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert_eq!(
+            after,
+            "{\r\n  \"name\": \"example\",\r\n  \"version\": \"0.2.0\"\r\n}\r\n"
+        );
+        assert_eq!(f.read_version().unwrap(), Version::new(0, 2, 0));
+    }
+
+    #[test]
+    fn reads_with_utf8_bom() {
+        let body = format!(
+            "\u{feff}{}",
+            indoc! {r#"
+                {
+                  "name": "example",
+                  "version": "0.1.0"
+                }
+            "#}
+        );
+        let (_d, f) = setup(&body);
+        assert_eq!(f.read_version().unwrap(), Version::new(0, 1, 0));
+    }
+
+    #[test]
+    fn writes_with_utf8_bom_preserves_bom() {
+        let body = format!(
+            "\u{feff}{}",
+            indoc! {r#"
+                {
+                  "name": "example",
+                  "version": "0.1.0"
+                }
+            "#}
+        );
+        let (_d, f) = setup(&body);
+        f.write_version(&Version::new(0, 2, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert!(after.starts_with('\u{feff}'));
+        assert!(after.contains(r#""version": "0.2.0""#));
+    }
+
+    #[test]
     fn missing_version_errors() {
         let (_d, f) = setup(indoc! {r#"
             {

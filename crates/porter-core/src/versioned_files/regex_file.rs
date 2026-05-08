@@ -181,6 +181,43 @@ mod tests {
     }
 
     #[test]
+    fn writes_pattern_with_optional_v_preserves_no_prefix() {
+        let body = "chart_revision = \"0.5.2\"\n";
+        let (_d, f) = setup(
+            body,
+            r#"chart_revision\s*=\s*"(?P<version>v?[0-9.]+)""#,
+        );
+        f.write_version(&Version::new(0, 6, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert_eq!(after, "chart_revision = \"0.6.0\"\n");
+    }
+
+    #[test]
+    fn writes_pattern_with_optional_v_preserves_v_prefix() {
+        let body = "chart_revision = \"v0.5.2\"\n";
+        let (_d, f) = setup(
+            body,
+            r#"chart_revision\s*=\s*"(?P<version>v?[0-9.]+)""#,
+        );
+        f.write_version(&Version::new(0, 6, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert_eq!(after, "chart_revision = \"v0.6.0\"\n");
+    }
+
+    #[test]
+    fn writes_multi_match_with_disagreeing_prefixes() {
+        let body = indoc! {r#"
+            image_tag = "v0.5.2"
+            sidecar_tag = "0.5.2"
+        "#};
+        let (_d, f) = setup(body, r#"_tag\s*=\s*"(?P<version>v?[0-9.]+)""#);
+        f.write_version(&Version::new(0, 6, 0)).unwrap();
+        let after = fs::read_to_string(f.path()).unwrap();
+        assert!(after.contains(r#"image_tag = "v0.6.0""#));
+        assert!(after.contains(r#"sidecar_tag = "0.6.0""#));
+    }
+
+    #[test]
     fn pattern_without_named_group_errors() {
         let dir = TempDir::new().unwrap();
         let err = RegexFile::new(dir.path().join("x"), r#"version = "[0-9.]+""#)

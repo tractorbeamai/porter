@@ -205,6 +205,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_summary_containing_separator_line() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("foo.md");
+        let body = indoc! {"
+            ---
+            bump: minor
+            ---
+
+            Quoting another changeset:
+
+            ---
+            bump: patch
+            ---
+
+            Continued summary.
+        "};
+        std::fs::write(&path, body).unwrap();
+        let cs = parse_changeset(&path, body).unwrap();
+        assert_eq!(cs.bump, Bump::Minor);
+        assert!(cs.summary.contains("Continued summary."));
+        assert!(cs.summary.contains("bump: patch"));
+    }
+
+    #[test]
     fn writes_and_roundtrips() {
         let dir = TempDir::new().unwrap();
         let p =
