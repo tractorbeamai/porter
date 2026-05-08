@@ -40,6 +40,7 @@ runs:
       run: |
         set -euo pipefail
         if [[ "$REQ_VERSION" == "latest" ]]; then
+          echo "::warning::setup-porter: pinning to a specific vX.Y.Z tag is strongly recommended; \`latest\` resolves at runtime and floats." >&2
           # Resolve `latest` via the GitHub Releases API rather than the
           # /releases/latest endpoint, since that endpoint hides prereleases
           # and we want explicit control later.

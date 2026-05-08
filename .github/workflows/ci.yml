@@ -33,6 +33,7 @@ jobs:
           key: cargo-${{ runner.os }}-${{ matrix.task }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: |
             cargo-${{ runner.os }}-${{ matrix.task }}-
+            cargo-${{ runner.os }}-
 
       - name: rustfmt
         if: matrix.task == 'fmt'
