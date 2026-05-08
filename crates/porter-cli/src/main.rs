@@ -497,7 +497,7 @@ fn cmd_attest(args: AttestArgs) -> Result<()> {
         finished_on,
         porter_version,
     };
-    let stmt = build_statement(&input);
+    let stmt = build_statement(&input)?;
     println!("{}", serde_json::to_string_pretty(&stmt)?);
     Ok(())
 }

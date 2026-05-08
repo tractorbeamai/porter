@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -118,15 +118,15 @@ pub struct AttestInput {
 /// Build an in-toto v1 Statement with SLSA Build Provenance v1
 /// embedded as the predicate.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics only if the SLSA provenance struct fails to serialize, which
-/// is impossible for the structured value we construct here (no
-/// non-string keys, no infinities, no NaN). The unwrap is documented
-/// rather than propagated so the function remains panic-free in
-/// practice and ergonomic at call sites.
-#[must_use]
-pub fn build_statement(input: &AttestInput) -> Statement {
+/// Returns an error if `input.source_repo` is not in a recognized form
+/// (`owner/repo` short form or a full `https://...` URL), or if the
+/// constructed provenance value fails to serialize. The latter is not
+/// expected to happen — `SlsaProvenance` has no non-string map keys or
+/// non-finite floats — but is propagated rather than panicked-on so
+/// callers stay in `Result` land.
+pub fn build_statement(input: &AttestInput) -> Result<Statement> {
     let mut digest = BTreeMap::new();
     digest.insert("sha256".to_owned(), input.subject_sha256.clone());
 
@@ -135,11 +135,12 @@ pub fn build_statement(input: &AttestInput) -> Statement {
         digest,
     };
 
+    let repo_url = normalize_repo_url(&input.source_repo)?;
+
     let invocation_id = format!(
-        "{}/actions/runs/{}{}",
-        normalize_repo_url(&input.source_repo),
-        input.run_id,
-        input
+        "{repo_url}/actions/runs/{run_id}{attempt}",
+        run_id = input.run_id,
+        attempt = input
             .run_attempt
             .as_deref()
             .map(|a| format!("/attempts/{a}"))
@@ -149,11 +150,7 @@ pub fn build_statement(input: &AttestInput) -> Statement {
     let mut external = serde_json::Map::new();
     external.insert(
         "source".into(),
-        serde_json::Value::String(format!(
-            "git+{}@{}",
-            normalize_repo_url(&input.source_repo),
-            input.source_ref
-        )),
+        serde_json::Value::String(format!("git+{repo_url}@{}", input.source_ref)),
     );
     if let Some(wf) = &input.workflow_ref {
         external.insert("workflow".into(), serde_json::Value::String(wf.clone()));
@@ -165,11 +162,7 @@ pub fn build_statement(input: &AttestInput) -> Statement {
             external_parameters: serde_json::Value::Object(external),
             internal_parameters: None,
             resolved_dependencies: vec![ResolvedDependency {
-                uri: format!(
-                    "git+{}@{}",
-                    normalize_repo_url(&input.source_repo),
-                    input.source_ref
-                ),
+                uri: format!("git+{repo_url}@{}", input.source_ref),
                 digest: {
                     let mut m = BTreeMap::new();
                     m.insert("gitCommit".into(), input.source_sha.clone());
@@ -194,22 +187,14 @@ pub fn build_statement(input: &AttestInput) -> Statement {
         },
     };
 
-    // `serde_json::to_value` can only fail for `Serialize` impls that
-    // explicitly error (e.g. non-string map keys, non-finite floats);
-    // `SlsaProvenance` contains neither. The `# Panics` block above
-    // documents this invariant for callers.
-    #[expect(
-        clippy::expect_used,
-        reason = "documented in this fn's `# Panics`: SlsaProvenance has no fallible Serialize impls"
-    )]
-    let predicate = serde_json::to_value(&provenance).expect("SlsaProvenance always serializes");
+    let predicate = serde_json::to_value(&provenance).context("serializing SLSA provenance")?;
 
-    Statement {
+    Ok(Statement {
         typ: STATEMENT_TYPE.into(),
         subject: vec![subject],
         predicate_type: PROVENANCE_PREDICATE_TYPE.into(),
         predicate,
-    }
+    })
 }
 
 /// Compute SHA-256 of a file as a lowercase hex string.
@@ -238,13 +223,25 @@ pub fn sha256_hex(path: &Path) -> Result<String> {
 /// GitHub repo strings come in two forms in the Actions environment:
 /// `owner/repo` (from `GITHUB_REPOSITORY`) and the full URL. Always
 /// normalize to a fully-qualified HTTPS URL with no trailing slash.
-fn normalize_repo_url(s: &str) -> String {
-    if s.starts_with("https://") || s.starts_with("git+https://") {
-        s.trim_end_matches('/')
-            .trim_start_matches("git+")
-            .to_owned()
+///
+/// Inputs we don't recognize (`http://`, `git@host:org/repo.git`, etc.)
+/// would silently produce malformed output if we tried to coerce them,
+/// so reject explicitly.
+fn normalize_repo_url(s: &str) -> Result<String> {
+    if let Some(rest) = s.strip_prefix("git+https://") {
+        Ok(format!("https://{}", rest.trim_end_matches('/')))
+    } else if s.starts_with("https://") {
+        Ok(s.trim_end_matches('/').to_owned())
+    } else if !s.contains("://") && !s.contains('@') {
+        let trimmed = s.trim_matches('/');
+        if !trimmed.contains('/') {
+            bail!("source repo {s:?} must be `owner/repo` or a full https:// URL");
+        }
+        Ok(format!("https://github.com/{trimmed}"))
     } else {
-        format!("https://github.com/{}", s.trim_matches('/'))
+        bail!(
+            "source repo {s:?} is not a recognized form (expected `owner/repo` or `https://...`)"
+        )
     }
 }
 
@@ -273,7 +270,7 @@ mod tests {
 
     #[test]
     fn statement_has_correct_top_level_shape() {
-        let s = build_statement(&fixture());
+        let s = build_statement(&fixture()).unwrap();
         assert_eq!(s.typ, STATEMENT_TYPE);
         assert_eq!(s.predicate_type, PROVENANCE_PREDICATE_TYPE);
         assert_eq!(s.subject.len(), 1);
@@ -285,7 +282,7 @@ mod tests {
 
     #[test]
     fn invocation_id_includes_run_attempt() {
-        let s = build_statement(&fixture());
+        let s = build_statement(&fixture()).unwrap();
         let metadata = &s.predicate["runDetails"]["metadata"]["invocationId"];
         assert_eq!(
             metadata,
@@ -295,7 +292,7 @@ mod tests {
 
     #[test]
     fn external_parameters_carry_source_uri() {
-        let s = build_statement(&fixture());
+        let s = build_statement(&fixture()).unwrap();
         let src = &s.predicate["buildDefinition"]["externalParameters"]["source"];
         assert_eq!(
             src,
@@ -305,7 +302,7 @@ mod tests {
 
     #[test]
     fn resolved_dependencies_carry_git_commit() {
-        let s = build_statement(&fixture());
+        let s = build_statement(&fixture()).unwrap();
         let dep0 = &s.predicate["buildDefinition"]["resolvedDependencies"][0];
         assert_eq!(
             dep0["digest"]["gitCommit"],
@@ -315,14 +312,14 @@ mod tests {
 
     #[test]
     fn builder_id_is_pinned() {
-        let s = build_statement(&fixture());
+        let s = build_statement(&fixture()).unwrap();
         assert_eq!(s.predicate["runDetails"]["builder"]["id"], BUILDER_ID);
     }
 
     #[test]
     fn normalize_repo_url_handles_short_form() {
         assert_eq!(
-            normalize_repo_url("tractorbeamai/porter"),
+            normalize_repo_url("tractorbeamai/porter").unwrap(),
             "https://github.com/tractorbeamai/porter"
         );
     }
@@ -330,14 +327,52 @@ mod tests {
     #[test]
     fn normalize_repo_url_handles_full_url_with_trailing_slash() {
         assert_eq!(
-            normalize_repo_url("https://github.com/tractorbeamai/porter/"),
+            normalize_repo_url("https://github.com/tractorbeamai/porter/").unwrap(),
             "https://github.com/tractorbeamai/porter"
         );
     }
 
     #[test]
+    fn normalize_repo_url_handles_git_plus_https() {
+        assert_eq!(
+            normalize_repo_url("git+https://github.com/tractorbeamai/porter").unwrap(),
+            "https://github.com/tractorbeamai/porter"
+        );
+    }
+
+    #[test]
+    fn normalize_repo_url_bails_on_http_scheme() {
+        let err = normalize_repo_url("http://github.com/tractorbeamai/porter")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a recognized form"), "got: {err}");
+    }
+
+    #[test]
+    fn normalize_repo_url_bails_on_ssh_form() {
+        let err = normalize_repo_url("git@github.com:tractorbeamai/porter.git")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a recognized form"), "got: {err}");
+    }
+
+    #[test]
+    fn normalize_repo_url_bails_on_short_form_without_slash() {
+        let err = normalize_repo_url("just-a-name").unwrap_err().to_string();
+        assert!(err.contains("owner/repo"), "got: {err}");
+    }
+
+    #[test]
+    fn build_statement_bails_on_unrecognized_repo_form() {
+        let mut input = fixture();
+        input.source_repo = "git@github.com:tractorbeamai/porter.git".into();
+        let err = build_statement(&input).unwrap_err().to_string();
+        assert!(err.contains("not a recognized form"), "got: {err}");
+    }
+
+    #[test]
     fn statement_roundtrips_through_json() {
-        let s = build_statement(&fixture());
+        let s = build_statement(&fixture()).unwrap();
         let blob = serde_json::to_string(&s).unwrap();
         let s2: Statement = serde_json::from_str(&blob).unwrap();
         assert_eq!(s, s2);
