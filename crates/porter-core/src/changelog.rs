@@ -81,12 +81,26 @@ pub fn prepend_section(path: &Path, section: &str) -> Result<()> {
     Ok(())
 }
 
+/// Today's date in UTC, formatted as `YYYY-MM-DD`.
+///
+/// # Panics
+///
+/// In theory, if `time`'s formatter rejects the static literal
+/// `[year]-[month]-[day]` against `OffsetDateTime::now_utc()`. Neither
+/// can happen — the format string parses at compile time via
+/// `format_description!`, and `now_utc()` is always in range — so
+/// documenting the invariant beats smuggling an unreachable fallback
+/// into release output.
 #[must_use]
 pub fn today_utc() -> String {
     let fmt = format_description!("[year]-[month]-[day]");
+    #[expect(
+        clippy::expect_used,
+        reason = "documented in this fn's `# Panics`: literal format + always-valid time cannot fail"
+    )]
     OffsetDateTime::now_utc()
         .format(&fmt)
-        .unwrap_or_else(|_| "0000-00-00".into())
+        .expect("yyyy-mm-dd literal cannot fail to format")
 }
 
 #[cfg(test)]

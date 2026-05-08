@@ -20,9 +20,11 @@ pub struct ApplyResult {
     pub consumed_changesets: Vec<PathBuf>,
 }
 
-/// Read each versioned file and assert they all carry the same version. The
-/// "lowest of all the files" version is what we treat as the current
-/// release line.
+/// Read each versioned file and assert they all carry the same version.
+///
+/// Returns the agreed-upon version as the current release line.
+/// Disagreement is an error — drift between versioned files is exactly
+/// the bug porter exists to prevent.
 ///
 /// # Errors
 ///
@@ -41,9 +43,6 @@ pub fn current_version(root: &Path, config: &Config) -> Result<Version> {
             .with_context(|| format!("reading current version from {}", f.path().display()))?;
         versions.push((f.path().to_path_buf(), v));
     }
-    // Default to the first file's version, but warn (via error) if any
-    // disagree — drift between versioned files is exactly the bug porter
-    // exists to prevent.
     let (_first_path, first) = &versions[0];
     for (p, v) in &versions[1..] {
         if v != first {

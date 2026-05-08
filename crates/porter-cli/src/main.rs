@@ -208,8 +208,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    let (config_path, config, root) = resolve_config(cli.config.as_deref())?;
-    let _ = config_path; // currently unused beyond resolution; kept for diagnostics
+    let (_config_path, config, root) = resolve_config(cli.config.as_deref())?;
     match cli.command {
         Command::Add(args) => cmd_add(&root, &config, args),
         Command::Status(args) => cmd_status(&root, &config, &args),
