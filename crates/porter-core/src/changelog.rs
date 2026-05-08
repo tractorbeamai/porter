@@ -13,6 +13,12 @@ use crate::changeset::{Bump, ChangesetSet};
 /// Format mirrors the Keep a Changelog convention loosely, grouped by bump
 /// kind. Output is deterministic (no timestamps) when `today` is provided
 /// fixed; otherwise the current UTC date is used.
+///
+/// Trust boundary: changeset summaries are written by PR authors and
+/// pasted in here verbatim — they are also the `--notes-file` that `gh
+/// release create` renders on the public Release page. Treat changesets
+/// as untrusted Markdown and review them on PR like any other content
+/// landing in the repo.
 #[must_use]
 pub fn render_section(version: &Version, today: &str, set: &ChangesetSet) -> String {
     let mut out = String::new();

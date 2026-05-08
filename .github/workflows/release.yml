@@ -148,7 +148,7 @@ jobs:
           porter attest "dist/${NAME}-${TARGET}.tar.gz" \
             > "attestations/${NAME}-${TARGET}.intoto.json"
 
-      - name: Sign attestation (cosign)
+      - name: Install cosign
         if: matrix.kind == 'cli-binary'
         uses: sigstore/cosign-installer@v3
       - name: Sign + upload attestation
@@ -248,7 +248,11 @@ jobs:
           mkdir -p dist
           # Pull every per-row checksums-<id>.txt asset from the release,
           # concatenate, and re-upload as the canonical checksums.txt the
-          # setup-porter action verifies against.
+          # setup-porter action verifies against. Trust model: only the
+          # porter App can upload to the release (enforced by the repo
+          # ruleset), so any `checksums-*.txt` here is App-authored. If
+          # a future change opens uploads to other identities, this merge
+          # needs filtering by the matrix row IDs we expect.
           if gh release view "$TAG" --json assets --jq '.assets[].name' \
               | grep -q '^checksums-'; then
             for asset in $(gh release view "$TAG" --json assets \

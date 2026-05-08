@@ -104,6 +104,12 @@ pub fn apply_next_version(
         .map(|c| c.path.clone())
         .collect::<Vec<_>>();
     if !dry_run {
+        // Removal is not transactional: a mid-loop failure leaves the
+        // versioned files bumped, the changelog rewritten, and a partial
+        // set of changesets gone. In practice this runs in CI on a fresh
+        // checkout and the rolling Version PR is regenerated next push,
+        // so the partial state never reaches main; if porter ever grows
+        // a local-tree mode, this loop should be wrapped accordingly.
         for p in &consumed {
             fs::remove_file(p).with_context(|| format!("removing changeset {}", p.display()))?;
         }

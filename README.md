@@ -17,6 +17,13 @@ The CLI is distributed as a single static binary via GitHub Releases:
     version: v0.1.0  # pin; `latest` is supported but discouraged
 ```
 
+The `@v0` reference points at a major-version floating tag that
+porter's release workflow force-moves on every release in the `v0.x.y`
+line — same convention as `actions/checkout@v5`. Pin the action to a
+specific commit SHA if you need supply-chain-pinned setup; pin
+`version:` to a specific `vX.Y.Z` tag if you need a reproducible CLI
+across runs.
+
 Locally, pull the matching tarball from the [releases page] and drop the
 `porter` binary on your `PATH`.
 
