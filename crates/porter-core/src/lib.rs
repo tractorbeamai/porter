@@ -18,6 +18,15 @@
 
 //! porter-core — release-cutting machinery for polyglot monorepos.
 //!
+//! This is the library half of [porter]; the
+//! [`porter-cli`](https://github.com/tractorbeamai/porter/tree/main/crates/porter-cli)
+//! crate consumes it. Most users will interact with the CLI rather
+//! than this crate directly; the library is published primarily so
+//! the CLI's behavior is testable and reusable from other Rust
+//! tools.
+//!
+//! # Layers
+//!
 //! The crate is split into independently testable layers:
 //!
 //! - [`changeset`] — parse and write `.changeset/*.md` files (semver bump +
@@ -27,12 +36,52 @@
 //!   string embedded in concrete file formats (Cargo workspace, Helm
 //!   chart, package.json, generic regex).
 //! - [`version`] — compute the next semver from a changeset set, honoring
-//!   the pre-1.0 convention.
+//!   the cargo / Changesets pre-1.0 convention (`0.5.2` + minor → `0.5.3`,
+//!   `0.5.2` + major → `0.6.0`).
 //! - [`changelog`] — render Markdown sections and prepend them to a
 //!   `CHANGELOG.md`.
 //! - [`apply`] — orchestrate the whole "version" step: read current,
 //!   compute next, rewrite every file, prepend changelog, consume
 //!   changesets.
+//! - [`build`] — cross-compile a CLI binary, tar-gzip it, and write a
+//!   BSD-format SHA-256 line into `dist/checksums.txt`.
+//! - [`matrix`] — fan `[[artifacts]]` entries out into a GitHub Actions
+//!   `strategy.matrix.include` array.
+//! - [`attest`] — build an unsigned in-toto v1 Statement with SLSA Build
+//!   Provenance v1 as the predicate (Phase D scaffolding; signing wraps
+//!   this output in a DSSE envelope via `cosign`).
+//!
+//! # Example
+//!
+//! Compute the next version a `porter version` invocation would produce,
+//! without writing anything:
+//!
+//! ```no_run
+//! use porter_core::{Config, ChangesetSet, current_version, compute_next_version};
+//! use std::path::Path;
+//!
+//! # fn main() -> anyhow::Result<()> {
+//! let root = Path::new(".");
+//! let config_path = Config::discover(root)
+//!     .ok_or_else(|| anyhow::anyhow!("no porter.toml found"))?;
+//! let config = Config::load(&config_path)?;
+//! let set = ChangesetSet::load_from_dir(&root.join(&config.changesets.directory))?;
+//! let current = current_version(root, &config)?;
+//! if let Some(next) = compute_next_version(&current, &set)? {
+//!     println!("{} -> {}", next.previous, next.next);
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Stability
+//!
+//! Public items re-exported at the crate root form the supported
+//! surface; module-level items not re-exported here may move between
+//! minor versions. Pin to a specific `0.x.y` if your code depends on
+//! the internal layout.
+//!
+//! [porter]: https://github.com/tractorbeamai/porter
 
 pub mod apply;
 pub mod attest;
