@@ -1,0 +1,107 @@
+name: setup-porter / self-test
+
+# Real-runner integration test for actions/setup-porter. Exercises the
+# action against actual GitHub Releases on each of porter's four
+# supported runner platforms (Linux x64, Linux arm64, macOS Intel,
+# macOS Apple Silicon).
+#
+# The bats suite at actions/setup-porter/tests/setup.bats covers the
+# action's logic with stubbed curl; this workflow covers the
+# integration concerns the bats suite can't:
+#   - per-platform tarball availability on the actual release
+#   - shasum/grep compatibility on the actual runner image
+#   - PATH wiring after install
+#   - rate-limit handling against the live GitHub API
+#
+# Skipped automatically when porter has no published releases (i.e.
+# before v0.0.1); the preflight job checks the API and gates the
+# matrix on the result.
+
+on:
+  pull_request:
+    paths:
+      - "actions/setup-porter/**"
+      - ".github/workflows/setup-porter-test.yml"
+  push:
+    branches: [main]
+    paths:
+      - "actions/setup-porter/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: check for releases
+    runs-on: ubuntu-latest
+    outputs:
+      has-release: ${{ steps.check.outputs.has-release }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          count=$(gh api "repos/${REPO}/releases" --jq 'length')
+          if [[ "$count" -gt 0 ]]; then
+            echo "has-release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No published releases yet; skipping setup-porter self-test. The bats suite still covers the action's logic."
+          fi
+
+  test:
+    name: install on ${{ matrix.runner }}
+    needs: preflight
+    if: needs.preflight.outputs.has-release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-15-intel
+          - macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - id: setup
+        uses: ./actions/setup-porter
+        with:
+          version: latest
+
+      - name: Smoke-test the installed binary
+        env:
+          EXPECTED: ${{ steps.setup.outputs.version }}
+        run: |
+          set -euo pipefail
+          # `porter --version` prints `porter <semver>`. The action's
+          # `version` output carries the tag (`v<semver>`); strip the
+          # leading `v` before comparing.
+          want="${EXPECTED#v}"
+          got=$(porter --version)
+          if ! echo "$got" | grep -q "$want"; then
+            echo "::error::porter --version output '$got' does not contain expected version '$want'"
+            exit 1
+          fi
+          echo "Installed porter $want successfully ('$got')"
+
+      - name: Confirm setup outputs are populated
+        env:
+          PORTER_PATH: ${{ steps.setup.outputs.path }}
+          PORTER_VERSION: ${{ steps.setup.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PORTER_PATH" || ! -x "$PORTER_PATH" ]]; then
+            echo "::error::setup.outputs.path is missing or not executable: '$PORTER_PATH'"
+            exit 1
+          fi
+          if [[ -z "$PORTER_VERSION" ]]; then
+            echo "::error::setup.outputs.version is empty"
+            exit 1
+          fi
