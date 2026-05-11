@@ -40,6 +40,26 @@ jobs:
           pipx install zizmor
           zizmor .
 
+  setup-porter-bats:
+    name: setup-porter bats
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      # Static-check setup.sh before running the unit tests; bats
+      # catches behavioral bugs, shellcheck catches quoting/word-split
+      # bugs the unit tests can't.
+      - name: shellcheck setup.sh
+        run: shellcheck actions/setup-porter/setup.sh
+
+      - name: bats setup.bats
+        run: bats actions/setup-porter/tests/setup.bats
+
   check:
     name: ${{ matrix.task }}
     runs-on: ubuntu-latest

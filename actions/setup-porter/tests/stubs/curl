@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Mock `curl` for setup.sh bats tests. Parses common flags out of the
+# args, picks the URL (last positional), and emits/writes a canned
+# response from $STUB_FIXTURES based on the URL pattern.
+#
+# Env knobs the tests can use to vary behavior:
+#   STUB_FIXTURES   — directory containing latest.json, checksums.txt,
+#                     porter.tar.gz fixtures.
+#   STUB_BAD_SHA    — if set, the checksums fixture is rewritten with a
+#                     deliberately wrong sha to exercise the verify path.
+
+set -euo pipefail
+
+out_file=""
+url=""
+
+while (($#)); do
+  case "$1" in
+    -o)
+      out_file="$2"
+      shift 2
+      ;;
+    -H)
+      # consume header value
+      shift 2
+      ;;
+    --retry|--retry-connrefused|-fsSL)
+      shift
+      ;;
+    -*)
+      shift
+      ;;
+    *)
+      url="$1"
+      shift
+      ;;
+  esac
+done
+
+# Pick the canned response by URL pattern. For tarball downloads,
+# resolve to the specific asset filename (e.g.
+# `porter-x86_64-unknown-linux-gnu.tar.gz`) inside $STUB_FIXTURES so
+# tests can pre-stage per-target tarballs.
+case "$url" in
+  *releases/latest)
+    payload="$STUB_FIXTURES/latest.json"
+    ;;
+  *checksums.txt)
+    payload="$STUB_FIXTURES/checksums.txt"
+    ;;
+  *porter-*.tar.gz)
+    payload="$STUB_FIXTURES/${url##*/}"
+    ;;
+  *)
+    echo "stub curl: no canned response for $url" >&2
+    exit 22
+    ;;
+esac
+
+if [[ ! -f "$payload" ]]; then
+  echo "stub curl: missing fixture $payload" >&2
+  exit 22
+fi
+
+if [[ -n "$out_file" ]]; then
+  cp "$payload" "$out_file"
+else
+  cat "$payload"
+fi
