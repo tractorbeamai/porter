@@ -26,6 +26,12 @@ on:
           installation token; the repo ruleset will reject tag pushes
           from any other identity.
         required: true
+      npm-token:
+        description: |
+          NPM auth token used by the `npm-package` artifact kind.
+          Required only if porter.toml declares a `[[artifacts]]`
+          entry of `kind = "npm-package"`.
+        required: false
 
 permissions:
   contents: read
@@ -43,7 +49,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.app-token }}
+          # Don't persist the App token in git config; the tag push
+          # below uses an explicit auth URL so the credential is
+          # scoped to a single `git push` invocation.
+          persist-credentials: false
 
       - uses: tractorbeamai/porter/actions/setup-porter@v0
         with:
@@ -61,7 +70,7 @@ jobs:
             git config user.name "porter[bot]"
             git config user.email "porter[bot]@users.noreply.github.com"
             git tag -a "$tag" -m "Release $tag"
-            git push origin "$tag"
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$tag"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
@@ -106,6 +115,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.tag.outputs.tag }}
+          persist-credentials: false
 
       - uses: tractorbeamai/porter/actions/setup-porter@v0
         with:
@@ -114,11 +124,16 @@ jobs:
       # ----- cli-binary --------------------------------------------------
       - name: Add Rust target
         if: matrix.kind == 'cli-binary'
-        run: rustup target add ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: rustup target add "$TARGET"
 
       - name: Build cli-binary
         if: matrix.kind == 'cli-binary'
-        run: porter build cli-binary --name ${{ matrix.name }} --target ${{ matrix.target }}
+        env:
+          NAME: ${{ matrix.name }}
+          TARGET: ${{ matrix.target }}
+        run: porter build cli-binary --name "$NAME" --target "$TARGET"
 
       - name: Upload cli-binary tarball
         if: matrix.kind == 'cli-binary'
@@ -201,14 +216,21 @@ jobs:
           # Strip the `v` prefix so `helm package --version` accepts it.
           version="${TAG#v}"
           helm package "$CHART" --version "$version" --app-version "$version" -d dist
-          pkg=$(ls dist/*.tgz | head -1)
-          helm push "$pkg" "$REGISTRY"
+          # Glob into an array to avoid the `ls | head -1` antipattern;
+          # `helm package` writes exactly one .tgz per invocation.
+          shopt -s nullglob
+          pkgs=(dist/*.tgz)
+          if [[ ${#pkgs[@]} -eq 0 ]]; then
+            echo "::error::helm package produced no .tgz in dist/" >&2
+            exit 1
+          fi
+          helm push "${pkgs[0]}" "$REGISTRY"
 
       # ----- npm-package -------------------------------------------------
       - name: Publish npm package
         if: matrix.kind == 'npm-package'
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.npm-token }}
           REGISTRY: ${{ matrix.registry }}
         working-directory: ${{ matrix.path }}
         run: |
@@ -223,10 +245,12 @@ jobs:
       # ----- python-wheel ------------------------------------------------
       - name: Build & publish Python wheel
         if: matrix.kind == 'python-wheel'
+        env:
+          WHEEL_PATH: ${{ matrix.path }}
         run: |
           set -euo pipefail
           pipx install maturin
-          (cd "${{ matrix.path }}" && maturin build --release --out ../dist)
+          (cd "$WHEEL_PATH" && maturin build --release --out ../dist)
 
   publish:
     needs: [tag, build]
@@ -238,6 +262,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ needs.tag.outputs.tag }}
+          persist-credentials: false
 
       - name: Merge per-row checksums
         env:

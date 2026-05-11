@@ -137,12 +137,13 @@ pub fn build_matrix(config: &Config) -> Vec<MatrixRow> {
 }
 
 /// Map a Rust target triple to a GitHub-hosted runner. Aarch64 macOS uses
-/// the M-series runners, `x86_64` macOS still uses Intel macs (macos-13 is
-/// the last Intel image).
+/// the M-series runners; `x86_64` macOS uses `macos-15-intel` (the
+/// canonical Intel macOS label since the `macos-13` image was
+/// deprecated).
 fn runner_for_target(target: &str) -> &'static str {
     match target {
         "aarch64-unknown-linux-gnu" => "ubuntu-24.04-arm",
-        "x86_64-apple-darwin" => "macos-13",
+        "x86_64-apple-darwin" => "macos-15-intel",
         "aarch64-apple-darwin" => "macos-14",
         // x86_64 Linux is the default. Any unknown target also lands
         // here so releases at least attempt to build; CI will fail

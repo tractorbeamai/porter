@@ -1,0 +1,28 @@
+# zizmor configuration for porter.
+#
+# Two audits are repo-wide policy decisions, not bugs:
+#
+#   - unpinned-uses: porter pins to floating major-version tags
+#     (`@v5`, `@v6`, `@v0`) by design. This matches the policy
+#     documented in README.md (`@v0` moves forward each release in
+#     the v0.x.y line, same as `actions/checkout@v5`). Consumers who
+#     need SHA-level pinning can do so on their side; the porter
+#     reusable workflows themselves stay on floating majors so a
+#     dependency-bump cascade isn't required for every action's
+#     security patch.
+#   - github-env: writing to GITHUB_PATH in `actions/setup-porter`
+#     is the canonical pattern for "this action adds a binary
+#     directory to PATH" (mirrors actions/setup-node, setup-go,
+#     etc.). zizmor flags this as Low-confidence; for an install
+#     action it's a false positive.
+#
+# Everything else stays on default settings.
+
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": any
+  github-env:
+    ignore:
+      - action.yml

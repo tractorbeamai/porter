@@ -13,6 +13,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  workflow-lint:
+    name: workflow-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # actionlint: GitHub Actions workflow linter (Go binary). Catches
+      # workflow syntax errors, expression typos, undefined matrix
+      # variables, deprecated runner labels. Bundles shellcheck under
+      # the hood and runs it against every `run:` block.
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+      # zizmor: security-focused Actions linter. Catches template
+      # injection, persistent-credentials checkout, untrusted-input
+      # patterns, etc. Repo-wide policies live in .github/zizmor.yml.
+      - name: zizmor
+        run: |
+          set -euo pipefail
+          pipx install zizmor
+          zizmor .
+
   check:
     name: ${{ matrix.task }}
     runs-on: ubuntu-latest
@@ -22,6 +49,8 @@ jobs:
         task: [fmt, clippy, test]
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Cache cargo registry & target
         uses: actions/cache@v4
@@ -60,17 +89,24 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-15-intel
           - target: aarch64-apple-darwin
             runner: macos-14
+    env:
+      # matrix.target is repo-controlled (the include block above), but
+      # route through env to keep the run blocks free of template
+      # expansion — the standard zizmor pattern.
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Add target
-        run: rustup target add ${{ matrix.target }}
+        run: rustup target add "$TARGET"
 
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }} --bin porter
+        run: cargo build --release --target "$TARGET" --bin porter
 
       - name: Smoke-run --version
-        run: ./target/${{ matrix.target }}/release/porter --version
+        run: ./target/"$TARGET"/release/porter --version
