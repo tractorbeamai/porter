@@ -73,7 +73,7 @@ that:
 
 - Targets `refs/tags/v*` on push.
 - Sets `enforcement: active`.
-- Names the porter App installation as the sole `bypass_actor`.
+- Names the porter App as the sole `bypass_actor`.
 - Rejects any tag-creation/update push from non-bypass identities.
 
 Run it after the App is installed:
@@ -82,12 +82,17 @@ Run it after the App is installed:
 GH_TOKEN=$(gh auth token) \
 ORG=tractorbeamai \
 REPO=porter \
-PORTER_APP_INSTALLATION_ID=12345678 \
+PORTER_APP_ID=12345678 \
 tools/install-ruleset.sh
 ```
 
-The installation ID is shown in the App's installation settings page
-URL: `…/installations/<id>`.
+`PORTER_APP_ID` is the **App ID**, not the installation ID. For
+`bypass_actors` of `actor_type: Integration`, GitHub's rulesets API
+expects the App's numeric ID — passing an installation ID gets a 422
+"Actor integration must be part of the ruleset source or owner
+organization". The App ID is shown on the App's settings page (top of
+the "About" section, immediately above the Client ID); you can also
+fish it out of `GET /orgs/<org>/installations` once installed.
 
 ## Verify the boundary
 
