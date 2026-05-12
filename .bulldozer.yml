@@ -1,0 +1,26 @@
+# Bulldozer auto-merge config.
+# Docs: https://github.com/palantir/bulldozer
+#
+# Opt-in only: bulldozer merges a PR when the `merge-when-ready` label is
+# applied AND every branch-protection check (policy-bot in particular) is
+# green. Branches also auto-update when main moves so long-lived PRs stay
+# mergeable.
+
+version: 1
+
+merge:
+  trigger:
+    labels:
+      - "merge-when-ready"
+  method: squash
+  options:
+    squash:
+      body: summarize_commits
+  delete_after_merge: true
+  required_statuses:
+    - "policy-bot: main"
+
+update:
+  trigger:
+    labels:
+      - "merge-when-ready"
