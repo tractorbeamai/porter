@@ -5,17 +5,22 @@
 # otherwise POSTs a new one.
 #
 # Required environment:
-#   GH_TOKEN                       — token with admin on the target repo
-#   ORG                            — owning org (e.g. tractorbeamai)
-#   REPO                           — repo name (e.g. constellation)
-#   PORTER_APP_INSTALLATION_ID     — installation ID for the porter App on this repo
+#   GH_TOKEN         — token with admin on the target repo
+#   ORG              — owning org (e.g. tractorbeamai)
+#   REPO             — repo name (e.g. constellation)
+#   PORTER_APP_ID    — App ID for the porter App (numeric).
+#                      Not the installation ID — for bypass_actors of
+#                      actor_type: Integration, GitHub's rulesets API
+#                      expects the App ID and rejects installation
+#                      IDs with a 422 "Actor integration must be part
+#                      of the ruleset source or owner organization".
 
 set -euo pipefail
 
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${ORG:?ORG is required}"
 : "${REPO:?REPO is required}"
-: "${PORTER_APP_INSTALLATION_ID:?PORTER_APP_INSTALLATION_ID is required}"
+: "${PORTER_APP_ID:?PORTER_APP_ID is required}"
 
 NAME="porter-tag-protection"
 
@@ -26,7 +31,7 @@ read -r -d '' BODY <<JSON || true
   "enforcement": "active",
   "bypass_actors": [
     {
-      "actor_id": ${PORTER_APP_INSTALLATION_ID},
+      "actor_id": ${PORTER_APP_ID},
       "actor_type": "Integration",
       "bypass_mode": "always"
     }
@@ -78,6 +83,6 @@ Verify: as a developer (not the porter App), run
     git tag v0.0.99 && git push origin v0.0.99
 The push should be rejected with "rule violations on \`v0.0.99\`".
 
-The only identity that may push v* tags is now installation
-${PORTER_APP_INSTALLATION_ID} of the porter App.
+The only identity that may push v* tags is now the porter App
+(App ID ${PORTER_APP_ID}).
 MSG
