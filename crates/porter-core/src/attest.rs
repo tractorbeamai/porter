@@ -239,9 +239,7 @@ fn normalize_repo_url(s: &str) -> Result<String> {
         }
         Ok(format!("https://github.com/{trimmed}"))
     } else {
-        bail!(
-            "source repo {s:?} is not a recognized form (expected `owner/repo` or `https://...`)"
-        )
+        bail!("source repo {s:?} is not a recognized form (expected `owner/repo` or `https://...`)")
     }
 }
 
