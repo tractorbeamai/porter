@@ -1,0 +1,57 @@
+# Repo-level policy-bot config. Overrides org-wide default.
+# Docs: https://github.com/palantir/policy-bot
+#
+# policy-bot is the single required check in branch protection.
+# Rules with `if.changed_files` are skipped when no matching files change,
+# and an `or` group with all skipped rules is vacuously satisfied.
+
+policy:
+  approval:
+    # CI runs on every PR (no paths filter), so it gates every PR —
+    # including docs-only ones at negligible cost.
+    - ci passed
+    # Renovate auto-approves its own dep bumps. Everyone else needs one
+    # human approval.
+    - or:
+        - renovate dependency PR
+        - solo maintainer self-merge
+        - one approval
+  disapproval:
+    requires:
+      organizations: ["tractorbeamai"]
+
+approval_rules:
+  - name: one approval
+    requires:
+      count: 1
+    options:
+      invalidate_on_push: true
+      ignore_update_merges: true
+
+  # Renovate can satisfy approval on its own PRs. The CI gate above is
+  # the safety net.
+  - name: renovate dependency PR
+    if:
+      has_author_in:
+        users: ["renovate[bot]", "tractorbeam-renovate[bot]"]
+    requires:
+      count: 0
+
+  - name: ci passed
+    requires:
+      count: 0
+      conditions:
+        has_workflow_result:
+          workflows:
+            - ".github/workflows/ci.yml"
+          conclusions: ["success"]
+
+  # Wade is the sole maintainer right now and can't approve his own PRs
+  # via GitHub review. CI still gates every PR. Revisit (delete this
+  # rule) when there's a second active maintainer.
+  - name: solo maintainer self-merge
+    if:
+      has_author_in:
+        users: ["wadefletch"]
+    requires:
+      count: 0
