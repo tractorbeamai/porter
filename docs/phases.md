@@ -48,10 +48,10 @@ status table.
 
 ## Phase C — the App and the ruleset
 
-**Status:** ⏳ partial. App spec + manual-install instructions
-shipped; ruleset installer script shipped; the App itself has not
-been created in `tractorbeamai/` yet, so neither piece has been
-exercised against a real repo end-to-end.
+**Status:** ✓ shipped. The porter App is registered in the
+`tractorbeamai` org, installed on `tractorbeamai/porter`, and the
+ruleset is active and exercised — v0.1.0 was the first release that
+went through this loop end-to-end.
 
 What "porter is the sole privileged tagger" means in practice:
 
