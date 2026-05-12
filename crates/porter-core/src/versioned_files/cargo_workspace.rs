@@ -172,10 +172,7 @@ mod tests {
         "};
         let (_dir, f) = write_and_read(body);
         let err = f.read_version().unwrap_err().to_string();
-        assert!(
-            err.contains("workspace.package"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("workspace.package"), "unexpected error: {err}");
     }
 
     #[test]
@@ -186,10 +183,7 @@ mod tests {
         "#};
         let (_dir, f) = write_and_read(body);
         let err = f.read_version().unwrap_err().to_string();
-        assert!(
-            err.contains("workspace.package"),
-            "unexpected error: {err}"
-        );
+        assert!(err.contains("workspace.package"), "unexpected error: {err}");
     }
 
     #[test]

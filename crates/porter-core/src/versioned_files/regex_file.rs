@@ -183,10 +183,7 @@ mod tests {
     #[test]
     fn writes_pattern_with_optional_v_preserves_no_prefix() {
         let body = "chart_revision = \"0.5.2\"\n";
-        let (_d, f) = setup(
-            body,
-            r#"chart_revision\s*=\s*"(?P<version>v?[0-9.]+)""#,
-        );
+        let (_d, f) = setup(body, r#"chart_revision\s*=\s*"(?P<version>v?[0-9.]+)""#);
         f.write_version(&Version::new(0, 6, 0)).unwrap();
         let after = fs::read_to_string(f.path()).unwrap();
         assert_eq!(after, "chart_revision = \"0.6.0\"\n");
@@ -195,10 +192,7 @@ mod tests {
     #[test]
     fn writes_pattern_with_optional_v_preserves_v_prefix() {
         let body = "chart_revision = \"v0.5.2\"\n";
-        let (_d, f) = setup(
-            body,
-            r#"chart_revision\s*=\s*"(?P<version>v?[0-9.]+)""#,
-        );
+        let (_d, f) = setup(body, r#"chart_revision\s*=\s*"(?P<version>v?[0-9.]+)""#);
         f.write_version(&Version::new(0, 6, 0)).unwrap();
         let after = fs::read_to_string(f.path()).unwrap();
         assert_eq!(after, "chart_revision = \"v0.6.0\"\n");
@@ -236,10 +230,7 @@ mod tests {
             chart_revision =
               "v0.5.2"
         "#};
-        let (_d, f) = setup(
-            body,
-            r#"(?s)chart_revision\s*=\s*"(?P<version>v[0-9.]+)""#,
-        );
+        let (_d, f) = setup(body, r#"(?s)chart_revision\s*=\s*"(?P<version>v[0-9.]+)""#);
         f.write_version(&Version::new(0, 6, 0)).unwrap();
         let after = fs::read_to_string(f.path()).unwrap();
         assert!(after.contains(r#""v0.6.0""#));
