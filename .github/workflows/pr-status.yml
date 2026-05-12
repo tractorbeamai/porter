@@ -1,0 +1,74 @@
+name: porter / pr-status
+
+# Reusable workflow consumer repos call from a `pull_request` trigger to
+# post (or update) a sticky comment summarizing what `porter status`
+# sees on the PR branch: pending changesets, the computed next version,
+# and a soft nudge when no changeset is present.
+#
+# Non-blocking by design — a missing changeset on a docs / CI / refactor
+# PR is fine. The comment is informational, not a gate.
+
+on:
+  workflow_call:
+    inputs:
+      porter-version:
+        description: porter CLI version to install.
+        required: false
+        type: string
+        default: latest
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Check out the PR's head so `porter status` reads the
+          # changesets the PR actually adds, not main's snapshot.
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: tractorbeamai/porter/actions/setup-porter@v0
+        with:
+          version: ${{ inputs.porter-version }}
+
+      - id: status
+        run: |
+          set -euo pipefail
+          json=$(porter status --json)
+          echo "$json"
+          {
+            echo 'json<<PORTER_STATUS_EOF'
+            echo "$json"
+            echo PORTER_STATUS_EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - id: body
+        env:
+          # Route the JSON through env to keep `${{ ... }}` out of the
+          # run block (zizmor `template-injection`).
+          STATUS_JSON: ${{ steps.status.outputs.json }}
+        run: |
+          set -euo pipefail
+          body=$(printf '%s' "$STATUS_JSON" | jq -r '
+            if (.changesets | length) == 0 then
+              "### 🚛 porter\n\nNo changeset detected. If this PR ships a user-visible change, run `porter add` and push the file. If not (docs, CI, refactor), ignore this comment."
+            else
+              "### 🚛 porter\n\nThis PR adds **" + (.changesets | length | tostring) + " changeset(s)** — overall bump **" + .bump + "**. On merge, the version moves **" + .current + " → " + .next + "**.\n\n<details><summary>Pending entries</summary>\n\n" + (.changesets | map("- **" + .bump + "** — " + .summary) | join("\n")) + "\n\n</details>"
+            end
+          ')
+          {
+            echo 'body<<PORTER_BODY_EOF'
+            echo "$body"
+            echo PORTER_BODY_EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          # `header` is marocchino's stickiness marker — re-runs of this
+          # job update the same comment instead of stacking new ones.
+          header: porter-status
+          message: ${{ steps.body.outputs.body }}
