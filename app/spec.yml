@@ -1,19 +1,19 @@
-# GitHub App manifest for the porter privileged tagger.
+# Configuration spec for the porter privileged-tagger GitHub App.
 #
-# To install: visit https://github.com/organizations/<org>/settings/apps/new
-# and click "Use a manifest" — paste this file's JSON-equivalent into the
-# importer (the GitHub manifest API takes JSON, but we keep YAML in the
-# repo for review). Or use:
+# This file is a *spec*, not an installer input — GitHub removed the
+# "create App from manifest" flow (both the `from-manifest` API and
+# the matching UI), so there's no way to import this directly. Create
+# the App by hand and copy the values below into the form.
 #
-#   gh api -X POST /organizations/<org>/settings/apps/from-manifest \
-#     --input app/manifest.yml
-#
-# (gh accepts YAML and translates.) After install, generate a private key,
-# install on the repo, and store the App ID + key as repository secrets
-# `PORTER_APP_ID` and `PORTER_APP_PRIVATE_KEY`. The reusable workflows
-# pass these through `secrets.app-token` after exchanging them for an
-# installation token via the `tibdex/github-app-token` action or the
-# equivalent.
+# Steps in app/README.md. Short version: org settings → Developer
+# settings → GitHub Apps → New GitHub App, fill in `name`,
+# `description`, `homepage` (= `url`), and tick the permissions /
+# events listed here. Then generate a private key, install on the
+# repo, and store the App ID + key as repository secrets
+# `PORTER_APP_ID` and `PORTER_APP_PRIVATE_KEY`. The reusable
+# workflows exchange these for an installation token via
+# `actions/create-github-app-token@v2` and pass it through
+# `secrets.app-token`.
 
 name: porter
 description: |

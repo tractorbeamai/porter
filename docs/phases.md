@@ -48,13 +48,14 @@ status table.
 
 ## Phase C — the App and the ruleset
 
-**Status:** ⏳ partial. App manifest + install instructions shipped;
-ruleset installer script shipped; not yet exercised against a real
-repo end-to-end.
+**Status:** ⏳ partial. App spec + manual-install instructions
+shipped; ruleset installer script shipped; the App itself has not
+been created in `tractorbeamai/` yet, so neither piece has been
+exercised against a real repo end-to-end.
 
 What "porter is the sole privileged tagger" means in practice:
 
-- A dedicated GitHub App ([`app/manifest.yml`](../app/manifest.yml))
+- A dedicated GitHub App (spec'd in [`app/spec.yml`](../app/spec.yml))
   whose installation token is the only identity allowed to push tags
   matching `refs/tags/v*`.
 - A repository ruleset ([`tools/install-ruleset.sh`](../tools/install-ruleset.sh))
