@@ -1,0 +1,64 @@
+name: tag on version merge
+
+# When a commit that bumps the workspace version lands on main —
+# typically the merged "Version Packages" PR opened by `version.yml`,
+# but also any manual `porter version` commit — push the matching
+# `v*` annotated tag using the porter App identity. That tag push is
+# what fires `porter-release.yml` to build and publish.
+#
+# Detection is structural, not message-based: ask porter what tag the
+# current state would carry (`porter release tag`), and push it if
+# the remote doesn't already have it. Idempotent — re-runs on the
+# same commit are a no-op.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: tractorbeamai/porter/actions/setup-porter@v0
+
+      - id: tag
+        run: |
+          set -euo pipefail
+          tag=$(porter release tag)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin "refs/tags/${tag}" | grep -q "refs/tags/${tag}$"; then
+            echo "${tag} already exists on origin; nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: app-token
+        if: steps.tag.outputs.skip != 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PORTER_APP_ID }}
+          private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
+
+      - name: Push tag
+        if: steps.tag.outputs.skip != 'true'
+        env:
+          # The App token is masked, but route it through env anyway
+          # to keep `${{ ... }}` out of the run block.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "porter[bot]"
+          git config user.email "porter[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          # Scope the credential to a single push via explicit auth
+          # URL — the checkout step set `persist-credentials: false`
+          # specifically so this token isn't written into git config.
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$TAG"

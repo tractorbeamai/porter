@@ -1,0 +1,38 @@
+name: version
+
+# porter dogfoods its own rolling-Version-PR workflow. On every push
+# to main, the reusable `version.yml` runs `porter status`, applies
+# any pending bump in a working copy, and opens (or updates) a
+# "Version Packages" PR that — when merged — lands the bump on main.
+# `tag-on-version-merge.yml` then pushes the matching `v*` tag, which
+# triggers `porter-release.yml` to build and publish.
+#
+# The mint job exists separately so the App-token output can be
+# passed into the reusable workflow as a secret. Per
+# `actions/create-github-app-token` docs, tokens forwarded through
+# job outputs stay masked in downstream jobs' logs.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  mint:
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.app-token.outputs.token }}
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PORTER_APP_ID }}
+          private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
+
+  rolling-pr:
+    needs: mint
+    uses: ./.github/workflows/version.yml
+    secrets:
+      app-token: ${{ needs.mint.outputs.token }}
