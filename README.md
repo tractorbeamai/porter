@@ -8,7 +8,9 @@ repo, so releases originate from one identity and one only.
 
 ## Adopting porter in a new repo
 
-End-to-end, in order. Each step is independently verifiable.
+End-to-end, in order. Each step is independently verifiable. For a
+worked walkthrough with concrete commands and the click-through for
+the GitHub App, see [`docs/getting-started.md`](docs/getting-started.md).
 
 1. **Add a `porter.toml` at the repo root.** See [Configure](#configure)
    below. Start with just `[changesets]` and one `[[versioned_files]]`
@@ -359,6 +361,7 @@ app/                  # GitHub App manifest + setup instructions
 - [`docs/artifact-kinds.md`](docs/artifact-kinds.md) — every `[[artifacts]]` kind, what it expects, and what's implemented today.
 - [`docs/json-schemas.md`](docs/json-schemas.md) — the exact shapes of `porter status --json` and `porter matrix --compact`.
 - [`docs/phases.md`](docs/phases.md) — the A/B/C/D/E phase plan referenced in commit messages and code comments.
+- [`docs/getting-started.md`](docs/getting-started.md) — end-to-end fresh-adoption walkthrough.
 - [`docs/runbooks.md`](docs/runbooks.md) — recovery procedures for the failure modes that actually happen (merge conflicts, mid-release failures, rollback).
 - [`app/README.md`](app/README.md) — GitHub App + ruleset setup.
 - [`.changeset/README.md`](.changeset/README.md) — changeset authoring rules.
