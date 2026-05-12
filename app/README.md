@@ -8,21 +8,28 @@ originates from porter — humans can't `git tag && git push` to bypass it.
 
 ## Install
 
-1. **Create the App in your org**:
+GitHub no longer supports the "create App from manifest" flow (the
+`from-manifest` API and the matching UI button are both gone), so the
+App has to be created by hand. [`app/spec.yml`](spec.yml) is the
+reference spec — copy values from it into the form.
 
-   ```sh
-   # The manifest endpoint accepts a JSON payload with the shape gh's
-   # `app create-from-manifest` produces from app/manifest.yml.
-   gh api --method POST \
-     /organizations/$ORG/settings/apps/from-manifest \
-     --input app/manifest.yml
-   ```
+1. **Create the App in your org**: org settings → Developer settings →
+   GitHub Apps → **New GitHub App**. Fill in:
+   - **Name**: `porter` (per `spec.yml`).
+   - **Description** and **Homepage URL**: copy from `spec.yml`.
+   - **Webhook**: uncheck "Active" (porter doesn't consume webhooks
+     in v1).
+   - **Repository permissions**: set each permission listed under
+     `default_permissions` in `spec.yml` (`contents: write`,
+     `pull_requests: write`, `actions: read`, `id_token: write`,
+     `attestations: write`).
+   - **Subscribe to events**: tick the events listed under
+     `default_events` in `spec.yml` (currently just `push`).
+   - **Where can this GitHub App be installed?**: "Only on this
+     account".
 
-   Or use the GitHub UI: **Org settings → Developer settings → GitHub
-   Apps → New GitHub App → "Create from a manifest"**, paste the
-   manifest, accept.
-
-2. **Generate a private key** for the App and download the `.pem`.
+2. **Generate a private key** on the App's settings page and download
+   the `.pem`.
 
 3. **Install** the App on the repo(s) you want porter to manage. From
    the App's settings page → "Install App" → choose the repo.
