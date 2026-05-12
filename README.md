@@ -13,47 +13,138 @@ End-to-end, in order. Each step is independently verifiable.
 1. **Add a `porter.toml` at the repo root.** See [Configure](#configure)
    below. Start with just `[changesets]` and one `[[versioned_files]]`
    entry — you can grow the file later.
+
 2. **Cut your first changeset.** Run `porter add --bump minor --summary
    "Initial release."` (or interactively). Commit it.
-3. **Wire the rolling version PR.** Add `.github/workflows/version.yml`
+
+3. **Set up the porter App and the tag ruleset.** Follow
+   [`app/README.md`](app/README.md): create the App in your org, install
+   it on the repo, store the `PORTER_APP_ID` and `PORTER_APP_PRIVATE_KEY`
+   repo secrets, then run `tools/install-ruleset.sh` to lock down
+   `refs/tags/v*`. Until the ruleset is installed, anyone can `git tag &&
+   git push` and bypass porter — the App is the entire trust boundary.
+
+4. **Wire the rolling Version PR.** Add `.github/workflows/version.yml`
    in the consumer repo:
+
    ```yaml
    name: version
    on:
      push:
        branches: [main]
+   permissions:
+     contents: read
    jobs:
+     mint:
+       runs-on: ubuntu-latest
+       outputs:
+         token: ${{ steps.app-token.outputs.token }}
+       steps:
+         - id: app-token
+           uses: actions/create-github-app-token@v2
+           with:
+             app-id: ${{ secrets.PORTER_APP_ID }}
+             private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
      rolling-pr:
+       needs: mint
        uses: tractorbeamai/porter/.github/workflows/version.yml@v0
        secrets:
-         app-token: ${{ secrets.PORTER_APP_TOKEN }}
+         app-token: ${{ needs.mint.outputs.token }}
    ```
-   On the next push to `main`, this opens a "Version Packages" PR.
-4. **Wire the release workflow.** Add `.github/workflows/release.yml`:
+
+   The separate `mint` job exists because `actions/create-github-app-token`
+   outputs the token from a step, and the reusable workflow consumes it
+   as a workflow-level secret — forwarding via `needs.<job>.outputs.token`
+   is the only way to bridge the two. The token stays masked in downstream
+   logs.
+
+5. **Wire the release workflow.** Add `.github/workflows/release.yml`:
+
    ```yaml
    name: release
    on:
      push:
        branches: [main]
        paths: [CHANGELOG.md]
+   permissions:
+     contents: read
    jobs:
+     mint:
+       runs-on: ubuntu-latest
+       outputs:
+         token: ${{ steps.app-token.outputs.token }}
+       steps:
+         - id: app-token
+           uses: actions/create-github-app-token@v2
+           with:
+             app-id: ${{ secrets.PORTER_APP_ID }}
+             private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
      release:
+       needs: mint
        uses: tractorbeamai/porter/.github/workflows/release.yml@v0
        secrets:
-         app-token: ${{ secrets.PORTER_APP_TOKEN }}
+         app-token: ${{ needs.mint.outputs.token }}
    ```
+
    The `paths: [CHANGELOG.md]` filter is the trigger — merging the
-   Version PR changes the changelog, which fires this workflow.
-5. **Install the porter GitHub App and ruleset.** Follow
-   [`app/README.md`](app/README.md). This is what makes porter the *sole*
-   privileged tagger; until you do, humans can still `git tag && git push`
-   to bypass it.
+   Version PR changes the changelog, which fires this workflow. If you
+   want the tag to push as soon as a version-bump commit lands on main
+   (skipping the changelog-path heuristic), copy
+   [`tag-on-version-merge.yml`](.github/workflows/tag-on-version-merge.yml)
+   from this repo into your `.github/workflows/` — it asks `porter
+   release tag` what tag the current state would carry and pushes if
+   absent. Pick one or the other, not both.
+
 6. **Merge the Version PR.** That tags `v0.0.1` (or whatever the bump
    computes), builds artifacts, and creates the GitHub Release.
 
 The first release publishes a `CHANGELOG.md` if you don't have one.
 After that the steady-state loop is just step 2 (author changesets) on
 every release-worthy PR.
+
+## Recommended setup (optional)
+
+Everything below is opt-in. Skip any of it without losing the core
+release loop. These are the same pieces porter dogfoods on itself.
+
+### PR-status comment (changeset-bot equivalent)
+
+Mirrors the comment @changesets-bot posts on each PR — pending
+changesets, the bump, and the version this PR would produce on merge.
+Non-blocking; absence of a changeset is a soft nudge, not an error.
+
+```yaml
+# .github/workflows/pr-status.yml
+name: pr-status
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  status:
+    uses: tractorbeamai/porter/.github/workflows/pr-status.yml@v0
+```
+
+### policy-bot + bulldozer (auto-merge on a label)
+
+If your org runs [policy-bot](https://github.com/palantir/policy-bot)
+and [bulldozer](https://github.com/palantir/bulldozer), copy porter's
+[`.policy.yml`](.policy.yml) and [`.bulldozer.yml`](.bulldozer.yml) to
+your repo root. They're a starting point, not a default — both encode
+trust decisions (who can self-merge, what counts as approval) you
+should review before adopting wholesale. Once installed, labeling a PR
+`merge-when-ready` queues it for auto-merge as soon as policy-bot's
+check is green.
+
+### Renovate
+
+porter ships [`renovate.json`](renovate.json) extending tractorbeam's
+shared config and auto-labeling `patch` / `pin` / `digest` updates as
+`merge-when-ready`. Adapt for your org's conventions; the
+auto-labeling pattern is what makes Renovate PRs flow through the
+bulldozer loop unattended.
 
 ## Install
 
@@ -66,15 +157,26 @@ The CLI is distributed as a single static binary via GitHub Releases:
     version: v0.1.0  # pin; `latest` is supported but discouraged
 ```
 
-The `@v0` reference points at a major-version floating tag that
-porter's release workflow force-moves on every release in the `v0.x.y`
-line — same convention as `actions/checkout@v5`. Pin the action to a
-specific commit SHA if you need supply-chain-pinned setup; pin
-`version:` to a specific `vX.Y.Z` tag if you need a reproducible CLI
-across runs.
+Locally, pull the matching tarball from the [releases page] and drop
+the `porter` binary on your `PATH`.
 
-Locally, pull the matching tarball from the [releases page] and drop the
-`porter` binary on your `PATH`.
+### Floating-tag semantics
+
+Refs like `@v0` and `setup-porter@v0` are major-version floating tags
+that porter's release workflow force-moves to the latest `v0.x.y` on
+every release — same convention as `actions/checkout@v5`. You get
+patch and minor updates automatically.
+
+If you need a frozen ref, pin in this order of immutability:
+- `setup-porter@<commit-sha>` for supply-chain-grade immutability of
+  the install action itself, plus `version: vX.Y.Z` for a frozen CLI.
+- `setup-porter@vX.Y.Z` plus `version: vX.Y.Z` for tag-level pinning
+  (an attacker who compromised the repo could still move the tag, but
+  it's immutable absent that).
+- `setup-porter@v0` plus `version: latest` for follow-the-floating-major.
+
+Reusable workflows (`version.yml`, `release.yml`, `pr-status.yml`)
+follow the same convention — pin the `uses:` ref the same way.
 
 ## Configure
 
@@ -257,6 +359,7 @@ app/                  # GitHub App manifest + setup instructions
 - [`docs/artifact-kinds.md`](docs/artifact-kinds.md) — every `[[artifacts]]` kind, what it expects, and what's implemented today.
 - [`docs/json-schemas.md`](docs/json-schemas.md) — the exact shapes of `porter status --json` and `porter matrix --compact`.
 - [`docs/phases.md`](docs/phases.md) — the A/B/C/D/E phase plan referenced in commit messages and code comments.
+- [`docs/runbooks.md`](docs/runbooks.md) — recovery procedures for the failure modes that actually happen (merge conflicts, mid-release failures, rollback).
 - [`app/README.md`](app/README.md) — GitHub App + ruleset setup.
 - [`.changeset/README.md`](.changeset/README.md) — changeset authoring rules.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — running tests, dogfooding porter on porter.
