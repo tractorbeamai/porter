@@ -21,7 +21,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
@@ -29,7 +29,7 @@ jobs:
       # bad expressions, deprecated runners, shellcheck on run blocks.
       # Wrapped by reviewdog so findings surface as inline PR comments;
       # fail_level: error keeps real problems blocking the build.
-      - uses: reviewdog/action-actionlint@v1
+      - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1
         with:
           fail_level: error
           reporter: github-pr-review
@@ -44,18 +44,18 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
       # Patch-pinned (not a floating major like other actions) because
       # zizmor-action publishes no `v0` tag; Renovate bumps it.
-      - uses: zizmorcore/zizmor-action@v0.5.6
+      - uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
 
   setup-porter-bats:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
@@ -79,12 +79,12 @@ jobs:
       matrix:
         task: [fmt, clippy, test]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
       - name: Cache cargo registry & target
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -113,11 +113,11 @@ jobs:
   cargo-deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@a531616d8ce3b9177443e48a1159bc945a099823 # v2
         with:
           command: check advisories
 
@@ -143,7 +143,7 @@ jobs:
       # expansion — the standard zizmor pattern.
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
 

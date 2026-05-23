@@ -52,7 +52,7 @@ jobs:
     permissions:
       contents: read # checkout only; writes go through the App token
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           fetch-depth: 0
           # Don't persist the App token in git config; the branch push
@@ -60,7 +60,7 @@ jobs:
           # scoped to a single `git push` invocation.
           persist-credentials: false
 
-      - uses: tractorbeamai/porter/actions/setup-porter@v0
+      - uses: tractorbeamai/porter/actions/setup-porter@ff06cce9e0249e0ce3b2b285b7de370739b50ef6 # v0
         with:
           version: ${{ inputs.porter-version }}
 
@@ -90,7 +90,7 @@ jobs:
       - name: Mint app token
         id: app-token
         if: steps.next.outputs.skip != 'true'
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.app-id }}
           private-key: ${{ secrets.app-private-key }}
