@@ -1,4 +1,4 @@
-name: pr-status
+name: pr-status-self
 
 # porter dogfoods its own pr-status reusable workflow on every PR
 # against main. Comment is informational and non-blocking; see
@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
   pull-requests: write
+
+concurrency:
+  group: pr-status-self-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   status:

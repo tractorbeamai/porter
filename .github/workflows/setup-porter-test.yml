@@ -1,4 +1,4 @@
-name: setup-porter / self-test
+name: setup-porter-test
 
 # Real-runner integration test for actions/setup-porter. Exercises the
 # action against actual GitHub Releases on each of porter's four
@@ -19,6 +19,7 @@ name: setup-porter / self-test
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - "actions/setup-porter/**"
       - ".github/workflows/setup-porter-test.yml"
@@ -30,6 +31,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: setup-porter-test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   preflight:

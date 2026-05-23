@@ -1,0 +1,16 @@
+# cargo-deny config. Mirrors constellation's RustSec toolchain
+# (constellation:rust/deny.toml), scoped to the advisories check.
+#
+# CI runs `cargo deny check advisories` (.github/workflows/ci.yml), which
+# audits the full dependency graph against the RustSec advisory database.
+# Constellation additionally enforces a license/bans/sources policy tied
+# to an internal OSS-license doc; porter has no such policy, so only the
+# advisory (security) scan is mirrored here. Add an entry to `ignore`
+# below — with a comment explaining why — to accept a specific advisory.
+
+[advisories]
+version = 2
+# Yanked crates are a maintenance smell, not a vulnerability — warn so a
+# yank doesn't break CI, but fail the build on any active RustSec advisory.
+yanked = "warn"
+ignore = []
