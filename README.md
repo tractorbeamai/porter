@@ -285,11 +285,14 @@ your editor's TOML LSP will pick it up if pointed at that file.
 
 ## How `next` is computed
 
-porter uses the cargo / Changesets pre-1.0 convention — semver under
-`1.0.0` treats a leading zero as the stability gate, so a "minor"
-changeset against `0.5.2` produces `0.5.3` and a "major" changeset
-produces `0.6.0`. Once you cross `1.0.0` the rules shift to ordinary
-semver.
+porter uses the cargo / Changesets pre-1.0 convention. Under `1.0.0`,
+[SemVer's initial-development clause][semver-0] treats the public API as
+unstable, so digit significance shifts left: a "minor" changeset against
+`0.5.2` produces `0.5.3` (patch-position bump) and a "major" changeset
+produces `0.6.0` (minor-position bump). Once you cross `1.0.0` the rules
+shift to ordinary semver.
+
+[semver-0]: https://semver.org/#spec-item-4
 
 | Current | Bump  | Next  |
 | ------- | ----- | ----- |
