@@ -32,16 +32,20 @@ on:
           the repo ruleset.
         required: true
 
+# GITHUB_TOKEN stays read-only: every mutation in this workflow — the
+# branch push and all `gh pr` calls — is authenticated with the App
+# token passed in as `app-token`, never GITHUB_TOKEN. Requesting write
+# here would be a dead permission, and because a reusable workflow can
+# only narrow the caller's grant (never widen it), it would also force
+# every consumer to grant their GITHUB_TOKEN write just to call us.
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   rolling-pr:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read # checkout only; writes go through the App token
     steps:
       - uses: actions/checkout@v5
         with:
