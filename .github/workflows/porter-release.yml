@@ -44,7 +44,7 @@ jobs:
       tag: ${{ steps.tag.outputs.tag }}
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
           persist-credentials: false
@@ -86,7 +86,7 @@ jobs:
       # env to keep run blocks free of template expansion.
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ needs.plan.outputs.tag }}
           persist-credentials: false
@@ -100,7 +100,7 @@ jobs:
       - name: Build artifact
         run: ./target/release/porter build cli-binary --target "$TARGET"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.id }}
           path: |
@@ -116,7 +116,7 @@ jobs:
       contents: write
       id-token: write  # OIDC token for cosign keyless signing
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ needs.plan.outputs.tag }}
           # This job writes no git refs — release create/upload go through the
@@ -124,7 +124,7 @@ jobs:
           # tag is moved by the isolated `float-tag` job below.
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: false
@@ -176,7 +176,7 @@ jobs:
 
       - name: Install cosign
         if: steps.signing.outputs.enabled == 'true'
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       # credential: github.token — cosign signs keyless via OIDC (id-token:
       # write above); the token here only uploads the bundles to the release.
@@ -217,7 +217,7 @@ jobs:
     permissions:
       contents: read # checkout only; the App token below carries its own write scope
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ needs.plan.outputs.tag }}
           # Full history so `git tag -f "$major" "$TAG"` can resolve the tag.

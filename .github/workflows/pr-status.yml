@@ -27,14 +27,14 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           # Check out the PR's head so `porter status` reads the
           # changesets the PR actually adds, not main's snapshot.
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - uses: tractorbeamai/porter/actions/setup-porter@v0
+      - uses: tractorbeamai/porter/actions/setup-porter@ff06cce9e0249e0ce3b2b285b7de370739b50ef6 # v0
         with:
           version: ${{ inputs.porter-version }}
 
