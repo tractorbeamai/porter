@@ -201,6 +201,14 @@ pub struct ReleaseConfig {
     pub tag_prefix: String,
     #[serde(default = "default_changelog_path")]
     pub changelog: PathBuf,
+    /// Template for the rolling "Version Packages" PR title (and its
+    /// branch commit). Supports `{version}` (the next version, e.g.
+    /// `0.1.1`) and `{tag}` (`tag_prefix` + version, e.g. `v0.1.1`).
+    /// Set it to e.g. `"chore(release): {version}"` for a Conventional
+    /// Commits–shaped subject, which is what lands on the default branch
+    /// when the PR is squash-merged.
+    #[serde(default = "default_version_pr_title")]
+    pub version_pr_title: String,
 }
 
 impl Default for ReleaseConfig {
@@ -208,7 +216,23 @@ impl Default for ReleaseConfig {
         Self {
             tag_prefix: default_tag_prefix(),
             changelog: default_changelog_path(),
+            version_pr_title: default_version_pr_title(),
         }
+    }
+}
+
+/// Placeholder tokens substituted in [`ReleaseConfig::version_pr_title`].
+const VERSION_PLACEHOLDER: &str = "{version}";
+const TAG_PLACEHOLDER: &str = "{tag}";
+
+impl ReleaseConfig {
+    /// Render [`Self::version_pr_title`] for `version` (a bare version
+    /// string such as `0.1.1`), substituting `{version}` and `{tag}`.
+    #[must_use]
+    pub fn render_pr_title(&self, version: &str) -> String {
+        self.version_pr_title
+            .replace(TAG_PLACEHOLDER, &format!("{}{version}", self.tag_prefix))
+            .replace(VERSION_PLACEHOLDER, version)
     }
 }
 
@@ -218,6 +242,10 @@ fn default_tag_prefix() -> String {
 
 fn default_changelog_path() -> PathBuf {
     PathBuf::from("CHANGELOG.md")
+}
+
+fn default_version_pr_title() -> String {
+    format!("Version Packages: {VERSION_PLACEHOLDER}")
 }
 
 impl Config {
@@ -396,5 +424,41 @@ mod tests {
         std::fs::write(tmp.path().join("porter.toml"), "").unwrap();
         let found = Config::discover(&nested).unwrap();
         assert_eq!(found, tmp.path().join("porter.toml"));
+    }
+
+    #[test]
+    fn default_pr_title_preserves_legacy_format() {
+        // Absent [release] (or absent version_pr_title) keeps the historical
+        // "Version Packages: <next>" title.
+        let cfg = Config::from_toml("").unwrap();
+        assert_eq!(
+            cfg.release.render_pr_title("0.1.1"),
+            "Version Packages: 0.1.1"
+        );
+    }
+
+    #[test]
+    fn pr_title_template_renders_version_and_tag() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [release]
+            tag_prefix = "v"
+            version_pr_title = "chore(release): {version} ({tag})"
+        "#})
+        .unwrap();
+        assert_eq!(
+            cfg.release.render_pr_title("0.1.1"),
+            "chore(release): 0.1.1 (v0.1.1)"
+        );
+    }
+
+    #[test]
+    fn pr_title_tag_honors_custom_prefix() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [release]
+            tag_prefix = "porter-"
+            version_pr_title = "{tag}"
+        "#})
+        .unwrap();
+        assert_eq!(cfg.release.render_pr_title("2.0.0"), "porter-2.0.0");
     }
 }

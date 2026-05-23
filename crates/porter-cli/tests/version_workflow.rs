@@ -174,3 +174,28 @@ fn bump_field_matches_jq_extraction() {
         "unexpected bump string: {bump:?}"
     );
 }
+
+#[test]
+fn pr_title_rendered_from_default_template() {
+    // version.yml reads `.pr_title` for the PR title / commit subject.
+    // With the default config it's "Version Packages: <next>".
+    let Some(jq) = jq_or_skip() else { return };
+    let dir = fixture(true);
+    let json = status_json(&dir);
+    let next = pipe_through_jq(&jq, &json, ".next // empty");
+    let pr_title = pipe_through_jq(&jq, &json, ".pr_title // empty");
+    assert_eq!(pr_title, format!("Version Packages: {next}"));
+}
+
+#[test]
+fn pr_title_empty_when_no_changesets() {
+    // The skip path: `.pr_title // empty` must coalesce to '' like `.next`.
+    let Some(jq) = jq_or_skip() else { return };
+    let dir = fixture(false);
+    let json = status_json(&dir);
+    let pr_title = pipe_through_jq(&jq, &json, ".pr_title // empty");
+    assert!(
+        pr_title.is_empty(),
+        "expected empty pr_title with no changesets, got {pr_title:?}"
+    );
+}
