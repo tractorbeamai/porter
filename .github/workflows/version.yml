@@ -124,11 +124,16 @@ jobs:
         run: |
           set -euo pipefail
           # The `title` input, when provided, overrides the configured title
-          # with the legacy "<title>: <next>" form.
+          # with the legacy "<title>: <next>" form. Otherwise use the title
+          # porter rendered from porter.toml. Fall back to the historical
+          # default when `pr_title` is absent — e.g. an installed porter that
+          # predates the field — so the title is never empty.
           if [[ -n "$TITLE" ]]; then
             title="$TITLE: $NEXT"
-          else
+          elif [[ -n "$PR_TITLE" ]]; then
             title="$PR_TITLE"
+          else
+            title="Version Packages: $NEXT"
           fi
 
           git config user.name "porter[bot]"
