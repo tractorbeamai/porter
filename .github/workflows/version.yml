@@ -52,7 +52,7 @@ jobs:
     permissions:
       contents: read # checkout only; writes go through the App token
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
           # Don't persist the App token in git config; the branch push
@@ -90,7 +90,7 @@ jobs:
       - name: Mint app token
         id: app-token
         if: steps.next.outputs.skip != 'true'
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           app-id: ${{ secrets.app-id }}
           private-key: ${{ secrets.app-private-key }}
