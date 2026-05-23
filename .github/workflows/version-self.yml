@@ -7,10 +7,11 @@ name: version-self
 # `tag-on-version-merge.yml` then pushes the matching `v*` tag, which
 # triggers `porter-release.yml` to build and publish.
 #
-# The mint job exists separately so the App-token output can be
-# passed into the reusable workflow as a secret. Per
-# `actions/create-github-app-token` docs, tokens forwarded through
-# job outputs stay masked in downstream jobs' logs.
+# We hand version.yml the App credentials and let it mint the token in
+# the job that uses it. (Minting here and passing the token across the
+# job boundary into the reusable would fail: create-github-app-token
+# revokes the token in its post step, so the reusable would get an
+# already-invalid token.)
 #
 # Credential policy: see README "Privileged tagger".
 
@@ -28,31 +29,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  mint:
-    runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.app-token.outputs.token }}
-    steps:
-      # Checkout only so the local ./actions/mint-porter-token composite is
-      # on disk; no credentials persisted — this job's sole output is the token.
-      - uses: actions/checkout@v5
-        with:
-          persist-credentials: false
-
-      # credential: app-token — version.yml pushes the protected version branch
-      # and opens the Version Packages PR as porter[bot] (GITHUB_TOKEN can't
-      # write the branch under the ruleset, and a PR it opened wouldn't trigger
-      # CI). Scoped to what version.yml uses, not the App's full install rights.
-      - id: app-token
-        uses: ./actions/mint-porter-token
-        with:
-          app-id: ${{ secrets.PORTER_APP_ID }}
-          private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-
   rolling-pr:
-    needs: mint
     uses: ./.github/workflows/version.yml
     secrets:
-      app-token: ${{ needs.mint.outputs.token }}
+      app-id: ${{ secrets.PORTER_APP_ID }}
+      app-private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}

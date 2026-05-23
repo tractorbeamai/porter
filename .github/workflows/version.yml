@@ -26,20 +26,23 @@ on:
         type: string
         default: "Version Packages"
     secrets:
-      app-token:
+      app-id:
         description: |
-          Token to push the version branch and open the PR. Should be a
-          porter App installation token (not GITHUB_TOKEN), so that the
-          eventual tag-push originates from the same identity allowed by
-          the repo ruleset.
+          porter App ID. The workflow mints an installation token from this
+          and `app-private-key` to push the version branch and open the PR —
+          GITHUB_TOKEN can't, because the repo ruleset only lets the App write
+          protected refs.
+        required: true
+      app-private-key:
+        description: porter App private key (PEM), paired with `app-id`.
         required: true
 
 # GITHUB_TOKEN stays read-only: every mutation in this workflow — the
-# branch push and all `gh pr` calls — is authenticated with the App
-# token passed in as `app-token`, never GITHUB_TOKEN. Requesting write
-# here would be a dead permission, and because a reusable workflow can
-# only narrow the caller's grant (never widen it), it would also force
-# every consumer to grant their GITHUB_TOKEN write just to call us.
+# branch push and all `gh pr` calls — is authenticated with an App token
+# minted in-job from `app-id`/`app-private-key`, never GITHUB_TOKEN.
+# Requesting write here would be a dead permission, and because a reusable
+# workflow can only narrow the caller's grant (never widen it), it would
+# also force every consumer to grant their GITHUB_TOKEN write to call us.
 permissions:
   contents: read
 
@@ -79,13 +82,28 @@ jobs:
         if: steps.next.outputs.skip != 'true'
         run: porter version
 
+      # credential: app-token — minted in this job (not passed across jobs,
+      # which would have it revoked before use) and used in the step below to
+      # push the protected version branch and open the PR as porter[bot].
+      # Uses create-github-app-token directly rather than porter's composite,
+      # since this workflow runs in the consumer's checkout, not porter's.
+      - name: Mint app token
+        id: app-token
+        if: steps.next.outputs.skip != 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-contents: write
+          permission-pull-requests: write
+
       # credential: app-token — pushes the protected version branch and opens
       # the PR as porter[bot]; GITHUB_TOKEN can't write the branch under the
       # ruleset, and a PR it opened wouldn't trigger the PR's CI checks.
       - name: Open or update Version PR
         if: steps.next.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.app-token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ inputs.branch }}
           TITLE: ${{ inputs.title }}
           NEXT: ${{ steps.next.outputs.next }}
