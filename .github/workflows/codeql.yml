@@ -1,0 +1,45 @@
+name: codeql
+
+# CodeQL static analysis (SAST) for the Rust workspace. Findings upload to
+# the Security tab as code-scanning alerts — qualitatively different from
+# clippy's lint-level checks (taint tracking, unsafe-usage patterns, etc.).
+#
+# Rust uses build-mode "none": CodeQL builds its database straight from
+# source, with no compile step, so this stays a single fast job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly re-scan so newly published CodeQL queries run against code
+    # that hasn't changed since the last push.
+    - cron: "27 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: analyze (rust)
+    runs-on: ubuntu-latest
+    # security-events: write uploads the SARIF results to code scanning.
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: rust
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@v4

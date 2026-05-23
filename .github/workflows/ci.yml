@@ -107,6 +107,21 @@ jobs:
         if: matrix.task == 'test'
         run: cargo test --workspace --all-targets
 
+  # cargo-deny advisories: audit the dependency graph against the RustSec
+  # advisory database. Mirrors constellation's rustsec toolchain; policy
+  # (and any accepted advisories) lives in deny.toml.
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
   build-binaries:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
