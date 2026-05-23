@@ -4,6 +4,8 @@ name: porter / version
 # Packages" PR. On every push to the default branch, runs `porter version`
 # in dry-run mode to compute the next bump, then opens or updates a PR
 # that, when merged, lands the version bump as a single commit on `main`.
+#
+# Credential policy: see README "Privileged tagger".
 
 on:
   workflow_call:
@@ -77,6 +79,9 @@ jobs:
         if: steps.next.outputs.skip != 'true'
         run: porter version
 
+      # credential: app-token — pushes the protected version branch and opens
+      # the PR as porter[bot]; GITHUB_TOKEN can't write the branch under the
+      # ruleset, and a PR it opened wouldn't trigger the PR's CI checks.
       - name: Open or update Version PR
         if: steps.next.outputs.skip != 'true'
         env:

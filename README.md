@@ -224,6 +224,32 @@ because no other identity could have created it.
 Phase D extends this with [Sigstore attestations](docs/phases.md#phase-d--attestation)
 chained back to the App identity.
 
+#### Credential policy
+
+porter's workflows authenticate with one of two credentials, chosen by a
+single rule:
+
+- **Writing a protected git ref** — pushing/moving a branch or any `v*` tag —
+  uses the **porter App token** (`porter[bot]`). It is the only identity the
+  rulesets allow to write those refs, and because it is a real identity its
+  pushes *trigger* downstream workflows (a release tag must fire the release).
+  Mint it with the [`mint-porter-token`](actions/mint-porter-token) action, in
+  a job isolated from any build/third-party steps so the App key isn't exposed.
+- **Everything else** — `gh release` create/upload on an existing tag, PR-status
+  comments, registry login, artifact upload, and OIDC signing (`id-token:
+  write`, cosign) — uses **`GITHUB_TOKEN`**. It's auto-scoped, expires per job,
+  and never needs ruleset bypass.
+- **Suppressing an unwanted trigger** is done with the workflow's *trigger
+  pattern*, not the token choice. For example `porter-release.yml` listens on
+  `tags: ["v*.*.*"]` (full semver only) so that force-moving the floating `v0`
+  major tag — itself an App-token write — doesn't re-trigger the release.
+
+Each credential-bearing step is tagged in the workflow with a
+`# credential: app-token — <why>` or `# credential: github.token — <why>`
+comment pointing back to this rule. The one deliberate exception
+(`release.yml` authoring the GitHub Release as `porter[bot]` for provenance)
+says so inline.
+
 ### PR-status comments
 
 A reusable workflow posts a sticky comment on every PR showing
