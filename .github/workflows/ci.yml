@@ -16,20 +16,23 @@ jobs:
   workflow-lint:
     name: workflow-lint
     runs-on: ubuntu-latest
+    # pull-requests: write lets reviewdog post inline review comments.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
-      # actionlint: GitHub Actions workflow linter (Go binary). Catches
-      # workflow syntax errors, expression typos, undefined matrix
-      # variables, deprecated runner labels. Bundles shellcheck under
-      # the hood and runs it against every `run:` block.
-      - name: actionlint
-        run: |
-          set -euo pipefail
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color
+      # actionlint: linter for GitHub Actions workflows — syntax errors,
+      # bad expressions, deprecated runners, shellcheck on run blocks.
+      # Wrapped by reviewdog so findings surface as inline PR comments;
+      # fail_level: error keeps real problems blocking the build.
+      - uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error
+          reporter: github-pr-review
 
   # zizmor: static analysis for GitHub Actions, catching security issues
   # like template injection and over-broad token permissions. Its online
