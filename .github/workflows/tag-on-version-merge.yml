@@ -45,6 +45,9 @@ jobs:
         with:
           app-id: ${{ secrets.PORTER_APP_ID }}
           private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
+          # The token only pushes a tag, so scope it to contents rather
+          # than inheriting the App installation's full permission set.
+          permission-contents: write
 
       - name: Push tag
         if: steps.tag.outputs.skip != 'true'

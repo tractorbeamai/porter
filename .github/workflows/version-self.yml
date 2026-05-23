@@ -30,6 +30,11 @@ jobs:
         with:
           app-id: ${{ secrets.PORTER_APP_ID }}
           private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
+          # Scope to what version.yml needs — push the version branch and
+          # open/update the Version Packages PR — rather than inheriting
+          # the App installation's full permission set.
+          permission-contents: write
+          permission-pull-requests: write
 
   rolling-pr:
     needs: mint
