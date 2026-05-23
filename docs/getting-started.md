@@ -164,22 +164,16 @@ on:
 permissions:
   contents: read
 jobs:
-  mint:
-    runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.app-token.outputs.token }}
-    steps:
-      - id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.PORTER_APP_ID }}
-          private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
   rolling-pr:
-    needs: mint
     uses: tractorbeamai/porter/.github/workflows/version.yml@v0
     secrets:
-      app-token: ${{ needs.mint.outputs.token }}
+      app-id: ${{ secrets.PORTER_APP_ID }}
+      app-private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
 ```
+
+The workflow mints its own App token from these secrets in the job
+that uses it — don't mint in a separate job and pass the token in, as
+`create-github-app-token` revokes it when that job ends.
 
 Commit it. On the next push to main, this opens a "Version Packages"
 PR showing `0.0.0 → 0.1.0` and the rendered changelog entry.
@@ -197,21 +191,11 @@ on:
 permissions:
   contents: read
 jobs:
-  mint:
-    runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.app-token.outputs.token }}
-    steps:
-      - id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.PORTER_APP_ID }}
-          private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
   release:
-    needs: mint
     uses: tractorbeamai/porter/.github/workflows/release.yml@v0
     secrets:
-      app-token: ${{ needs.mint.outputs.token }}
+      app-id: ${{ secrets.PORTER_APP_ID }}
+      app-private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
 ```
 
 The `paths: [CHANGELOG.md]` filter is the trigger: merging the

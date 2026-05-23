@@ -12,9 +12,9 @@ name: porter / release
 # `matrix.sign`, then sign and attach SLSA provenance — by registry
 # digest for images/charts, as detached bundles for binaries.
 #
-# Credential policy: see README "Privileged tagger". In short: the App
-# token (passed in as `app-token`) writes the protected `vX.Y.Z` tag;
-# GITHUB_TOKEN handles release uploads, registry login, and OIDC signing.
+# Credential policy: see README "Privileged tagger". In short: an App token
+# minted in-job from `app-id`/`app-private-key` writes the protected `vX.Y.Z`
+# tag; GITHUB_TOKEN handles release uploads, registry login, and OIDC signing.
 
 on:
   workflow_call:
@@ -25,11 +25,14 @@ on:
         type: string
         default: latest
     secrets:
-      app-token:
+      app-id:
         description: |
-          Token used to push the release tag. Must be a porter App
-          installation token; the repo ruleset will reject tag pushes
-          from any other identity.
+          porter App ID. The workflow mints an installation token from this
+          and `app-private-key` to push the release tag — the repo ruleset
+          rejects a tag push from any other identity.
+        required: true
+      app-private-key:
+        description: porter App private key (PEM), paired with `app-id`.
         required: true
       npm-token:
         description: |
@@ -63,11 +66,24 @@ jobs:
         with:
           version: ${{ inputs.porter-version }}
 
+      # credential: app-token — minted in this job (not passed across jobs,
+      # which would have it revoked before use) and used by the steps below
+      # to push the protected vX.Y.Z tag and author the release as porter[bot].
+      # Uses create-github-app-token directly rather than porter's composite,
+      # since this workflow runs in the consumer's checkout, not porter's.
+      - name: Mint app token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          permission-contents: write
+
       # credential: app-token — pushes the protected vX.Y.Z tag; the ruleset
       # rejects a tag push from any other identity.
       - id: cut
         env:
-          GH_TOKEN: ${{ secrets.app-token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           tag=$(porter release tag)
@@ -99,7 +115,7 @@ jobs:
       # by porter[bot] (provenance), and the token is already in this job.
       - name: Create GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.app-token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ steps.cut.outputs.tag }}
         run: |
           set -euo pipefail
