@@ -21,10 +21,14 @@ on:
         type: string
         default: porter/version
       title:
-        description: Title for the rolling Version PR.
+        description: |
+          Optional override for the Version PR title. When set, the title is
+          `<title>: <next-version>` (legacy behavior). When empty (default),
+          the title comes from porter.toml `[release].version_pr_title` —
+          configure it there to get e.g. a Conventional Commits subject.
         required: false
         type: string
-        default: "Version Packages"
+        default: ""
     secrets:
       app-id:
         description: |
@@ -77,6 +81,9 @@ jobs:
             exit 0
           fi
           echo "next=$next" >> "$GITHUB_OUTPUT"
+          # Title rendered from porter.toml `[release].version_pr_title`.
+          pr_title=$(echo "$status_json" | jq -r '.pr_title // empty')
+          echo "pr_title=$pr_title" >> "$GITHUB_OUTPUT"
 
       - name: Apply version bump
         if: steps.next.outputs.skip != 'true'
@@ -105,7 +112,10 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ inputs.branch }}
+          # `title` input is an optional override; when empty, use the title
+          # porter rendered from porter.toml `[release].version_pr_title`.
           TITLE: ${{ inputs.title }}
+          PR_TITLE: ${{ steps.next.outputs.pr_title }}
           NEXT: ${{ steps.next.outputs.next }}
           # Route github-context strings through env vars rather than
           # ${{ ... }} expansion inside the shell to avoid template
@@ -113,12 +123,20 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+          # The `title` input, when provided, overrides the configured title
+          # with the legacy "<title>: <next>" form.
+          if [[ -n "$TITLE" ]]; then
+            title="$TITLE: $NEXT"
+          else
+            title="$PR_TITLE"
+          fi
+
           git config user.name "porter[bot]"
           git config user.email "porter[bot]@users.noreply.github.com"
 
           git checkout -B "$BRANCH"
           git add -A
-          git commit -m "$TITLE: $NEXT"
+          git commit -m "$title"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:$BRANCH"
 
           notes=$(porter release notes || true)
@@ -132,8 +150,8 @@ jobs:
 
           existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
           if [[ -n "$existing" ]]; then
-            gh pr edit "$existing" --title "$TITLE: $NEXT" --body "$body"
+            gh pr edit "$existing" --title "$title" --body "$body"
           else
             gh pr create --head "$BRANCH" --base "$DEFAULT_BRANCH" \
-              --title "$TITLE: $NEXT" --body "$body"
+              --title "$title" --body "$body"
           fi
