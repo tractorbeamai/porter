@@ -11,19 +11,70 @@ implemented today.
 
 ## Implementation status
 
-| Kind             | porter.toml | matrix expansion | release.yml steps | tested end-to-end |
-| ---------------- | ----------- | ---------------- | ----------------- | ----------------- |
-| `cli-binary`     | ✓           | ✓                | ✓ (Phase B)       | ✓ (porter ships itself this way) |
-| `oci-image`      | ✓           | ✓                | skeleton          | ✗                 |
-| `helm-chart`     | ✓           | ✓                | skeleton          | ✗                 |
-| `npm-package`    | ✓           | ✓                | skeleton          | ✗                 |
-| `python-wheel`   | ✓           | ✓                | skeleton          | ✗                 |
+| Kind             | porter.toml | matrix expansion | release.yml steps | cosign signing | tested end-to-end |
+| ---------------- | ----------- | ---------------- | ----------------- | -------------- | ----------------- |
+| `cli-binary`     | ✓           | ✓                | ✓                 | ✓ (blob)       | ✓ (porter ships itself this way) |
+| `oci-image`      | ✓           | ✓                | ✓                 | ✓ (by digest)  | ✗                 |
+| `helm-chart`     | ✓           | ✓                | ✓                 | ✓ (by digest)  | ✗                 |
+| `npm-package`    | ✓           | ✓                | skeleton          | — (n/a)        | ✗                 |
+| `python-wheel`   | ✓           | ✓                | skeleton          | — (n/a)        | ✗                 |
 
 "Skeleton" means the step block exists in `release.yml` and shells out
-to a standard tool (`docker/build-push-action`, `helm`, `npm publish`,
-`maturin`), but no consumer has dogfooded the path and the steps may
-need iteration. If you hit an issue with one of these, file it — the
-intent is full coverage; we just haven't burned that path in yet.
+to a standard tool (`npm publish`, `maturin`), but no consumer has
+dogfooded the path and the steps may need iteration. If you hit an issue
+with one of these, file it — the intent is full coverage; we just
+haven't burned that path in yet.
+
+## Signing
+
+Signing is **opt-in**. Add a `[signing]` block to `porter.toml` and every
+*signable* artifact — `cli-binary`, `oci-image`, `helm-chart` — is signed
+with [cosign] and gets a [SLSA Build Provenance v1] attestation, both
+keyless via the release job's OIDC token. With no block, nothing is
+signed.
+
+```toml
+[signing]
+# Empty is enough — everything below is the default.
+backend = "sigstore"   # "none" is an explicit off-switch
+fulcio_url = "https://fulcio.sigstore.dev"
+rekor_url  = "https://rekor.sigstore.dev"
+```
+
+`porter matrix` reads this block and stamps each signable row with
+`sign = true` plus the Fulcio/Rekor endpoints; the cosign steps in
+`release.yml` are gated on `matrix.sign`. The two modalities:
+
+- **By digest** (`oci-image`, `helm-chart`): `cosign sign` + `cosign
+  attest --type slsaprovenance1` against `<registry>@<sha256:…>`. The
+  signature and attestation live in the registry next to the artifact.
+  This is what a [Sigstore policy-controller `ClusterImagePolicy`][policy]
+  admits on.
+- **As detached bundles** (`cli-binary`): `cosign sign-blob` and `cosign
+  attest-blob` produce `<name>-<target>.sig.bundle` and `.att.bundle`,
+  uploaded to the GitHub Release. Verify with `cosign verify-blob
+  --bundle …` and `cosign verify-blob-attestation --bundle …`.
+
+`npm-package` and `python-wheel` are not cosign-signed: npm carries its
+own provenance (`npm publish --provenance`) and PyPI has its own
+attestation story; porter stays out of their way.
+
+**The provenance subject is set by cosign**, not porter. porter emits
+just the predicate (`porter attest --emit predicate`) — the build
+identity, source repo, and invocation metadata a policy verifies — and
+cosign computes the subject digest from the artifact it actually signs.
+
+**Registry auth.** Signing `oci-image`/`helm-chart` writes signatures to
+the registry, so the job needs push credentials. The reusable workflow
+logs in to `ghcr.io` automatically with the workflow token. For any
+other registry (ECR, Docker Hub, …) the reusable workflow can't supply
+credentials generically — your calling workflow must obtain them (e.g.
+`aws-actions/configure-aws-credentials` + `aws ecr get-login-password`
+for ECR). File an issue if you need a first-class hook for this.
+
+[cosign]: https://docs.sigstore.dev/cosign/overview/
+[SLSA Build Provenance v1]: https://slsa.dev/spec/v1.0/provenance
+[policy]: ../policy/cluster-image-policy.example.yaml
 
 ## `cli-binary`
 
@@ -60,7 +111,10 @@ fails loudly if the runner can't compile for it.
    appends to `dist/checksums.txt`.
 3. `gh release upload <tag> dist/<name>-<target>.tar.gz` and the
    per-row checksum file.
-4. (Phase D) emit + sign attestation alongside the artifact.
+4. When signing is enabled: `cosign sign-blob` and `cosign attest-blob
+   --type slsaprovenance1` (predicate from `porter attest --emit
+   predicate`), uploading `<name>-<target>.sig.bundle` and `.att.bundle`
+   to the Release. See [Signing](#signing).
 
 **Asset name:** `<name>-<target>.tar.gz`. The archive contains a
 single binary at the archive root named `<name>` (or override via
@@ -86,15 +140,16 @@ platforms = ["linux/amd64", "linux/arm64"]        # default: amd64+arm64
 **Workflow steps** (`if: matrix.kind == 'oci-image'`):
 1. `docker/setup-buildx-action@v3`
 2. `docker/build-push-action@v6` with `tags: <registry>:<vX.Y.Z>`,
-   `provenance: false` (Phase D will issue our own attestations
-   instead of the buildkit-default ones).
+   `provenance: false` (porter issues its own SLSA attestation instead
+   of the buildkit-default one).
+3. When signing is enabled: `cosign sign` + `cosign attest --type
+   slsaprovenance1` against `<registry>@<digest>` (the digest from the
+   build-push step). See [Signing](#signing).
 
-**Authentication:** the workflow assumes the runner has push access
-via the workflow's `GITHUB_TOKEN` if `registry` is `ghcr.io/...`. For
-DockerHub or other registries you'll need a `docker/login-action` step
-in your wrapper workflow (the porter reusable doesn't add one yet —
-this is part of "skeleton"). File an issue if you need a hook for
-this; we'll add one.
+**Authentication:** the reusable workflow logs in to `ghcr.io`
+automatically with the workflow token. For ECR, Docker Hub, or other
+registries, your calling workflow must obtain push credentials before
+invoking porter's `release.yml` — see [Signing](#signing) for details.
 
 ## `helm-chart`
 
@@ -113,7 +168,11 @@ registry = "oci://ghcr.io/tractorbeamai/charts" # OCI registry (note `oci://` pr
 **Workflow steps** (`if: matrix.kind == 'helm-chart'`):
 1. `helm package <chart> --version <vX.Y.Z without 'v'> --app-version
    <same> -d dist`
-2. `helm push dist/<chart>-<version>.tgz <registry>`
+2. `helm push dist/<chart>-<version>.tgz <registry>` — the pushed ref
+   and digest are parsed from helm's output.
+3. When signing is enabled: `cosign sign` + `cosign attest --type
+   slsaprovenance1` against the pushed `<repo>@<digest>` (a chart in an
+   OCI registry is just another OCI artifact). See [Signing](#signing).
 
 **Note:** `helm package --version` rejects a leading `v`, so the
 workflow strips it (`version="${TAG#v}"`). Your chart's `Chart.yaml`

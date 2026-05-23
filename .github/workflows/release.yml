@@ -7,9 +7,10 @@ name: porter / release
 #   3. build (×N)  — fan out across artifact rows.
 #   4. publish     — collect everything into the GitHub Release.
 #
-# Phase B implements: cli-binary builds end-to-end, plus skeleton
-# job steps for oci-image / helm-chart that shell out to standard tools.
-# Phase D adds attestation as additional steps inside `build`.
+# A row is signed when `porter matrix` sets `sign=true` on it (driven by
+# the repo's `[signing]` config). The cosign steps below, gated on
+# `matrix.sign`, then sign and attach SLSA provenance — by registry
+# digest for images/charts, as detached bundles for binaries.
 
 on:
   workflow_call:
@@ -110,7 +111,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-      id-token: write  # reserved for Phase D Sigstore OIDC
+      id-token: write  # OIDC token for cosign keyless signing
     steps:
       - uses: actions/checkout@v5
         with:
@@ -120,6 +121,27 @@ jobs:
       - uses: tractorbeamai/porter/actions/setup-porter@v0
         with:
           version: ${{ inputs.porter-version }}
+
+      # ----- signing prerequisites ---------------------------------------
+      # cosign (keyless, via the job's id-token) is installed on every
+      # signable row; `matrix.sign` is set by `porter matrix` when
+      # `[signing]` is enabled in porter.toml.
+      - name: Install cosign
+        if: matrix.sign == 'true'
+        uses: sigstore/cosign-installer@v3
+
+      # oci-image and helm-chart push to (and sign into) an OCI registry,
+      # so they need registry auth. GHCR is logged in automatically with
+      # the workflow token. Other registries (ECR, Docker Hub, …) need
+      # credentials this reusable workflow can't supply generically — see
+      # docs/artifact-kinds.md for how to wire them.
+      - name: Log in to GHCR
+        if: (matrix.kind == 'oci-image' || matrix.kind == 'helm-chart') && contains(matrix.registry, 'ghcr.io')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       # ----- cli-binary --------------------------------------------------
       - name: Add Rust target
@@ -148,45 +170,37 @@ jobs:
           # Per-row checksum file; the publish job merges them later.
           gh release upload "$TAG" --clobber "dist/checksums.txt#checksums-${NAME}-${TARGET}.txt"
 
-      # Phase D: emit an unsigned in-toto v1 statement for every artifact
-      # row. Sign with cosign keyless using the workflow's OIDC token,
-      # then upload alongside the artifact. Consumers verify via
-      # `cosign verify-attestation` against the porter App's identity.
-      - name: Emit attestation
-        if: matrix.kind == 'cli-binary'
-        env:
-          NAME: ${{ matrix.name }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          mkdir -p attestations
-          porter attest "dist/${NAME}-${TARGET}.tar.gz" \
-            > "attestations/${NAME}-${TARGET}.intoto.json"
-
-      - name: Install cosign
-        if: matrix.kind == 'cli-binary'
-        uses: sigstore/cosign-installer@v3
-      - name: Sign + upload attestation
-        if: matrix.kind == 'cli-binary'
+      # Sign the tarball and attach SLSA provenance, both keyless via the
+      # job's OIDC token. Two detached bundles land on the Release:
+      # `.sig.bundle` (a signature `cosign verify-blob` checks) and
+      # `.att.bundle` (the provenance `cosign verify-attestation` checks).
+      # cosign builds the in-toto statement from the predicate porter
+      # emits, setting the subject to the tarball's own digest.
+      - name: Sign + attest cli-binary
+        if: matrix.kind == 'cli-binary' && matrix.sign == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.tag.outputs.tag }}
           NAME: ${{ matrix.name }}
           TARGET: ${{ matrix.target }}
-          COSIGN_EXPERIMENTAL: "1"
+          FULCIO_URL: ${{ matrix.fulcio_url }}
+          REKOR_URL: ${{ matrix.rekor_url }}
         run: |
           set -euo pipefail
-          # Wrap the in-toto statement in a DSSE envelope and sign with
-          # Fulcio (keyless OIDC). The .intoto.jsonl bundle holds both.
-          cosign attest-blob \
-            --predicate "attestations/${NAME}-${TARGET}.intoto.json" \
-            --type slsaprovenance \
-            --bundle "attestations/${NAME}-${TARGET}.bundle.json" \
-            --yes \
-            "dist/${NAME}-${TARGET}.tar.gz"
-          gh release upload "$TAG" --clobber \
-            "attestations/${NAME}-${TARGET}.intoto.json" \
-            "attestations/${NAME}-${TARGET}.bundle.json"
+          art="dist/${NAME}-${TARGET}.tar.gz"
+          sig="dist/${NAME}-${TARGET}.sig.bundle"
+          att="dist/${NAME}-${TARGET}.att.bundle"
+          cosign sign-blob --yes \
+            --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" \
+            --bundle "$sig" "$art"
+          # Pin the source ref to the release tag: the build job runs in
+          # the caller's context, where GITHUB_REF is the branch.
+          porter attest --emit predicate --source-ref "refs/tags/${TAG}" > predicate.json
+          cosign attest-blob --yes \
+            --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" \
+            --predicate predicate.json --type slsaprovenance1 \
+            --bundle "$att" "$art"
+          gh release upload "$TAG" --clobber "$sig" "$att"
 
       # ----- oci-image ---------------------------------------------------
       - name: Set up Docker Buildx
@@ -194,6 +208,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build & push image
+        id: build_image
         if: matrix.kind == 'oci-image'
         uses: docker/build-push-action@v6
         with:
@@ -202,10 +217,34 @@ jobs:
           push: true
           platforms: ${{ matrix.platforms }}
           tags: ${{ matrix.registry }}:${{ needs.tag.outputs.tag }}
-          provenance: false  # Phase D will issue our own attestations
+          provenance: false  # porter issues its own SLSA attestation below
+
+      # Sign the pushed image and attach SLSA provenance by digest (never
+      # by tag — the digest is the immutable thing the admission policy
+      # gates on). cosign stores both in the registry next to the image.
+      - name: Sign + attest image
+        if: matrix.kind == 'oci-image' && matrix.sign == 'true'
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          REGISTRY: ${{ matrix.registry }}
+          DIGEST: ${{ steps.build_image.outputs.digest }}
+          FULCIO_URL: ${{ matrix.fulcio_url }}
+          REKOR_URL: ${{ matrix.rekor_url }}
+        run: |
+          set -euo pipefail
+          ref="${REGISTRY}@${DIGEST}"
+          cosign sign --yes \
+            --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" "$ref"
+          # Pin the source ref to the release tag: the build job runs in
+          # the caller's context, where GITHUB_REF is the branch.
+          porter attest --emit predicate --source-ref "refs/tags/${TAG}" > predicate.json
+          cosign attest --yes \
+            --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" \
+            --predicate predicate.json --type slsaprovenance1 "$ref"
 
       # ----- helm-chart --------------------------------------------------
       - name: Package & push Helm chart
+        id: push_chart
         if: matrix.kind == 'helm-chart'
         env:
           TAG: ${{ needs.tag.outputs.tag }}
@@ -224,7 +263,42 @@ jobs:
             echo "::error::helm package produced no .tgz in dist/" >&2
             exit 1
           fi
-          helm push "${pkgs[0]}" "$REGISTRY"
+          # Capture helm push output to recover the pushed ref + digest so
+          # the signing step can sign by digest. helm writes both to
+          # stderr as `Pushed: <ref>` / `Digest: sha256:<hex>`.
+          out=$(helm push "${pkgs[0]}" "$REGISTRY" 2>&1)
+          echo "$out"
+          digest=$(printf '%s\n' "$out" | sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p')
+          pushed=$(printf '%s\n' "$out" | sed -n 's/^Pushed: \(.*\)$/\1/p')
+          if [[ -n "$digest" && -n "$pushed" ]]; then
+            # Drop the `:tag` suffix and pin to the digest.
+            echo "ref=${pushed%:*}@${digest}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Sign the pushed chart and attach SLSA provenance by digest, the
+      # same way oci-image is handled (a Helm chart in an OCI registry is
+      # just another OCI artifact).
+      - name: Sign + attest Helm chart
+        if: matrix.kind == 'helm-chart' && matrix.sign == 'true'
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          REF: ${{ steps.push_chart.outputs.ref }}
+          FULCIO_URL: ${{ matrix.fulcio_url }}
+          REKOR_URL: ${{ matrix.rekor_url }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$REF" ]]; then
+            echo "::error::could not parse pushed chart digest from helm push output" >&2
+            exit 1
+          fi
+          cosign sign --yes \
+            --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" "$REF"
+          # Pin the source ref to the release tag: the build job runs in
+          # the caller's context, where GITHUB_REF is the branch.
+          porter attest --emit predicate --source-ref "refs/tags/${TAG}" > predicate.json
+          cosign attest --yes \
+            --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" \
+            --predicate predicate.json --type slsaprovenance1 "$REF"
 
       # ----- npm-package -------------------------------------------------
       - name: Publish npm package

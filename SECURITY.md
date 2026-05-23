@@ -31,9 +31,9 @@ The high-impact surfaces, ordered by blast radius:
   every downstream attestation.
 - **Anything that lets an attacker forge an attestation** that
   `cosign verify-attestation` will accept against the porter App's
-  identity. This includes both signing-side bugs (Phase D scaffolding
-  in `attest.rs`) and verification-side bugs (the `setup-porter`
-  consumer side, once Phase D ships verification).
+  identity. This includes provenance-construction bugs (`attest.rs`),
+  the signing wiring in `release.yml`, and verification-side bugs (the
+  `setup-porter` consumer side, once it ships verification).
 - **Supply-chain bugs in `setup-porter`** that could install a binary
   whose checksum doesn't match the release-published `checksums.txt`.
   The known-good case is documented in

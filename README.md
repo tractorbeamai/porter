@@ -182,6 +182,33 @@ cli-binary is end-to-end today. `oci-image`, `helm-chart`,
 [`docs/artifact-kinds.md`](docs/artifact-kinds.md) for the status
 table.
 
+### Signing
+
+Opt-in. Add a `[signing]` block — empty is enough — and every signable
+artifact (container images, Helm charts, CLI binaries) is signed with
+[cosign] and gets a SLSA Build Provenance v1 attestation, keyless via
+the release job's OIDC token (no keys to manage). Images and charts are
+signed by registry digest; binaries get detached
+`.sig.bundle`/`.att.bundle` files on the Release. npm and Python
+artifacts are left to their ecosystems' own provenance.
+
+```toml
+[signing]
+# Empty is enough: keyless Sigstore against public Fulcio/Rekor.
+# backend = "sigstore"   # the default; "none" is an explicit off-switch
+```
+
+With no `[signing]` block, releases aren't signed — zero config until
+you want it. Signing images/charts pushes signatures to the registry,
+so the job needs push credentials: the reusable workflow logs in to
+`ghcr.io` automatically, while other registries (ECR, Docker Hub) need a
+login step in your calling workflow. See
+[`docs/artifact-kinds.md`](docs/artifact-kinds.md#signing) for
+verification commands and the admission-policy example in
+[`policy/`](policy/cluster-image-policy.example.yaml).
+
+[cosign]: https://docs.sigstore.dev/cosign/overview/
+
 ### Privileged tagger
 
 A single-purpose [GitHub App](app/README.md) holds the only identity
@@ -291,7 +318,7 @@ PRs that need to be marked as part of the next release), author a
 | `release notes`   | Print the body of the most recent changelog section.               |
 | `matrix`          | Emit a GitHub Actions matrix derived from `[[artifacts]]`.         |
 | `build cli-binary`| Cross-compile a CLI binary, archive it, and write a checksum line. |
-| `attest`          | Emit an unsigned in-toto v1 Statement for an artifact (Phase D).   |
+| `attest`          | Emit unsigned SLSA provenance for an artifact — a complete in-toto v1 Statement (`--emit statement`, default) or just the predicate for `cosign attest` to sign (`--emit predicate`). |
 
 Run `porter <subcommand> --help` for flags.
 
