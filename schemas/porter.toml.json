@@ -186,7 +186,12 @@
       "additionalProperties": false,
       "properties": {
         "tag_prefix": { "type": "string", "default": "v" },
-        "changelog": { "type": "string", "default": "CHANGELOG.md" }
+        "changelog": { "type": "string", "default": "CHANGELOG.md" },
+        "version_pr_title": {
+          "type": "string",
+          "default": "Version Packages: {version}",
+          "description": "Template for the rolling Version PR title (and its branch commit). Supports {version} and {tag} placeholders. Set to e.g. \"chore(release): {version}\" for a Conventional Commits subject on the squash-merged commit."
+        }
       }
     }
   }

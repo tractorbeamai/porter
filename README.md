@@ -310,6 +310,10 @@ targets = [
 [release]
 tag_prefix = "v"
 changelog = "CHANGELOG.md"
+# Title for the rolling Version PR (and its commit). {version} and {tag}
+# are substituted; set it to a Conventional Commits subject if your repo
+# squash-merges and wants a conventional history on the default branch.
+version_pr_title = "Version Packages: {version}"   # e.g. "chore(release): {version}"
 ```
 
 The full schema lives at [`schemas/porter.toml.json`](schemas/porter.toml.json);

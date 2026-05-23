@@ -18,6 +18,7 @@ $ porter status --json
   "current": "0.5.2",
   "next": "0.5.3",
   "bump": "minor",
+  "pr_title": "Version Packages: 0.5.3",
   "changesets": [
     {
       "path": ".changeset/feat-attest.md",
@@ -33,6 +34,7 @@ $ porter status --json
 | `current`     | string (semver)                 | always                           |
 | `next`        | string (semver) or `null`       | `null` iff `changesets` is empty |
 | `bump`        | `"patch"` / `"minor"` / `"major"` or `null` | `null` iff `changesets` is empty |
+| `pr_title`    | string or `null`                | `null` iff `changesets` is empty |
 | `changesets`  | array of objects                | always; empty when none pending  |
 | `changesets[].path`    | string (path relative to repo root) | always |
 | `changesets[].bump`    | `"patch"` / `"minor"` / `"major"`   | always |
@@ -41,6 +43,10 @@ $ porter status --json
 Notes:
 - `next` follows the cargo / Changesets pre-1.0 convention. See [How
   `next` is computed](../README.md#how-next-is-computed) in the README.
+- `pr_title` is the rolling Version PR title rendered from porter.toml
+  `[release].version_pr_title` (default `Version Packages: {version}`),
+  with `{version}`/`{tag}` substituted for the next version. `version.yml`
+  uses it as the PR title and bump-commit subject.
 - `summary` is the changeset body verbatim, including any literal
   `\n---` lines inside the prose. It's the same string that lands in
   `CHANGELOG.md` and the GitHub Release notes.

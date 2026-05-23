@@ -292,6 +292,12 @@ fn cmd_status(root: &Path, config: &Config, args: &StatusArgs) -> Result<()> {
             "current": current.to_string(),
             "next": next.as_ref().map(|n| n.next.to_string()),
             "bump": next.as_ref().map(|n| n.bump.as_str()),
+            // Rendered rolling Version PR title for the next version (null when
+            // there's nothing to release). version.yml consumes this so the
+            // title/commit subject is configured in porter.toml, not the workflow.
+            "pr_title": next
+                .as_ref()
+                .map(|n| config.release.render_pr_title(&n.next.to_string())),
             "changesets": set.changesets.iter().map(format_changeset_json).collect::<Vec<_>>(),
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
