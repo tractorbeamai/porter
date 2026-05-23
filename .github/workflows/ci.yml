@@ -99,13 +99,16 @@ jobs:
         if: matrix.task == 'fmt'
         run: cargo fmt --all -- --check
 
+      # `--locked` here is deliberate: it fails CI if Cargo.lock drifts from
+      # Cargo.toml, instead of letting the gap surface only in the release
+      # workflow (which builds `--locked`). Keeps the committed lock honest.
       - name: clippy
         if: matrix.task == 'clippy'
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: test
         if: matrix.task == 'test'
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets --locked
 
   # cargo-deny advisories: audit the dependency graph against the RustSec
   # advisory database. Mirrors constellation's rustsec toolchain; policy
