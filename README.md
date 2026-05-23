@@ -233,8 +233,14 @@ single rule:
   uses the **porter App token** (`porter[bot]`). It is the only identity the
   rulesets allow to write those refs, and because it is a real identity its
   pushes *trigger* downstream workflows (a release tag must fire the release).
-  Mint it with the [`mint-porter-token`](actions/mint-porter-token) action, in
-  a job isolated from any build/third-party steps so the App key isn't exposed.
+  Always mint the token in the job that uses it: `create-github-app-token`
+  revokes the token when its job ends, so a token minted in one job and handed
+  to another (or to a called workflow) arrives already-invalid. porter's
+  in-repo workflows mint via the [`mint-porter-token`](actions/mint-porter-token)
+  composite; the reusables that run in a consumer's checkout call
+  `create-github-app-token` directly. Where the token-using job also runs build
+  or third-party steps (`porter-release`'s floating-tag move), minting is split
+  into its own job so the App key isn't co-located with them.
 - **Everything else** — `gh release` create/upload on an existing tag, PR-status
   comments, registry login, artifact upload, and OIDC signing (`id-token:
   write`, cosign) — uses **`GITHUB_TOKEN`**. It's auto-scoped, expires per job,
