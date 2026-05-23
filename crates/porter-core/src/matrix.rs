@@ -5,11 +5,16 @@
 //! kind: an `oci-image` is one row, a `cli-binary` expands to one row per
 //! target triple, etc. The reusable `release.yml` consumes the JSON we
 //! emit here as a `strategy.matrix.include` array.
+//!
+//! Signing config travels on the matrix too: when a repo's `[signing]`
+//! is enabled, each signable row carries `sign = true` and the
+//! Fulcio/Rekor endpoints, and `release.yml` gates its cosign steps on
+//! `matrix.sign`.
 
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::config::{ArtifactConfig, Config};
+use crate::config::{ArtifactConfig, Config, SigningConfig};
 
 /// One row in the `strategy.matrix.include` array. Carries the union of
 /// every field any kind of artifact needs; downstream `if:` conditions
@@ -44,6 +49,15 @@ pub struct MatrixRow {
     /// `runs-on: ${{ matrix.runner }}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runner: Option<String>,
+
+    // Set on signable rows when signing is enabled; absent means the row
+    // isn't signed. `release.yml` gates its cosign steps on `matrix.sign`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fulcio_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rekor_url: Option<String>,
 }
 
 impl MatrixRow {
@@ -66,12 +80,29 @@ impl MatrixRow {
             package: None,
             target: None,
             runner: None,
+            sign: None,
+            fulcio_url: None,
+            rekor_url: None,
         }
+    }
+
+    /// Stamp this row with signing metadata from `signing`, but only if
+    /// `signing` is enabled. Called for signable kinds (oci-image,
+    /// helm-chart, cli-binary); npm/python rows are left unsigned because
+    /// those ecosystems carry their own provenance mechanisms.
+    fn with_signing(mut self, signing: &SigningConfig) -> Self {
+        if signing.enabled() {
+            self.sign = Some(true);
+            self.fulcio_url = Some(signing.fulcio_url.clone());
+            self.rekor_url = Some(signing.rekor_url.clone());
+        }
+        self
     }
 }
 
 #[must_use]
 pub fn build_matrix(config: &Config) -> Vec<MatrixRow> {
+    let signing = config.signing();
     let mut rows = Vec::new();
     for art in &config.artifacts {
         match art {
@@ -88,7 +119,7 @@ pub fn build_matrix(config: &Config) -> Vec<MatrixRow> {
                 r.registry = Some(registry.clone());
                 r.platforms = Some(platforms.join(","));
                 r.runner = Some("ubuntu-latest".into());
-                rows.push(r);
+                rows.push(r.with_signing(&signing));
             }
             ArtifactConfig::HelmChart {
                 name,
@@ -99,13 +130,15 @@ pub fn build_matrix(config: &Config) -> Vec<MatrixRow> {
                 r.chart = Some(chart.display().to_string());
                 r.registry = Some(registry.clone());
                 r.runner = Some("ubuntu-latest".into());
-                rows.push(r);
+                rows.push(r.with_signing(&signing));
             }
             ArtifactConfig::NpmPackage {
                 name,
                 path,
                 registry,
             } => {
+                // npm packages carry their own provenance (`npm publish
+                // --provenance`); porter doesn't cosign-sign them.
                 let mut r = MatrixRow::base("npm-package", name, "");
                 r.path = Some(path.display().to_string());
                 r.registry = Some(registry.clone());
@@ -128,7 +161,7 @@ pub fn build_matrix(config: &Config) -> Vec<MatrixRow> {
                     r.package = Some(package.clone());
                     r.target = Some(target.clone());
                     r.runner = Some(runner_for_target(target).into());
-                    rows.push(r);
+                    rows.push(r.with_signing(&signing));
                 }
             }
         }
@@ -225,6 +258,146 @@ mod tests {
         assert!(v.get("include").is_some());
         assert_eq!(v["include"].as_array().unwrap().len(), 1);
         assert_eq!(v["include"][0]["kind"], "helm-chart");
+    }
+
+    #[test]
+    fn no_signing_block_leaves_all_rows_unsigned() {
+        // Opt-in: without a [signing] block, even signable kinds are
+        // left unsigned.
+        let cfg = Config::from_toml(indoc! {r#"
+            [[artifacts]]
+            kind = "oci-image"
+            name = "api"
+            context = "rust/"
+            dockerfile = "rust/bins/api/Dockerfile"
+            registry = "ghcr.io/example/api"
+
+            [[artifacts]]
+            kind = "cli-binary"
+            name = "porter"
+            package = "porter-cli"
+            targets = ["x86_64-unknown-linux-gnu"]
+        "#})
+        .unwrap();
+        for r in &build_matrix(&cfg) {
+            assert_eq!(r.sign, None, "{} must not be signed", r.id);
+            assert!(r.fulcio_url.is_none());
+        }
+    }
+
+    #[test]
+    fn signing_block_stamps_signable_rows() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [signing]
+
+            [[artifacts]]
+            kind = "oci-image"
+            name = "api"
+            context = "rust/"
+            dockerfile = "rust/bins/api/Dockerfile"
+            registry = "ghcr.io/example/api"
+
+            [[artifacts]]
+            kind = "helm-chart"
+            name = "platform"
+            chart = "deploy/helm/platform"
+            registry = "oci://ghcr.io/example/charts"
+
+            [[artifacts]]
+            kind = "cli-binary"
+            name = "porter"
+            package = "porter-cli"
+            targets = ["x86_64-unknown-linux-gnu"]
+        "#})
+        .unwrap();
+        let m = build_matrix(&cfg);
+        for r in &m {
+            assert_eq!(r.sign, Some(true), "{} should be signed", r.id);
+            assert_eq!(r.fulcio_url.as_deref(), Some("https://fulcio.sigstore.dev"));
+            assert_eq!(r.rekor_url.as_deref(), Some("https://rekor.sigstore.dev"));
+        }
+    }
+
+    #[test]
+    fn npm_and_python_rows_are_never_signed_even_when_enabled() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [signing]
+
+            [[artifacts]]
+            kind = "npm-package"
+            name = "sdk"
+            path = "ts/packages/sdk"
+
+            [[artifacts]]
+            kind = "python-wheel"
+            name = "client"
+            path = "py/client"
+        "#})
+        .unwrap();
+        let m = build_matrix(&cfg);
+        for r in &m {
+            assert_eq!(r.sign, None, "{} must not be signed", r.id);
+            assert!(r.fulcio_url.is_none());
+        }
+    }
+
+    #[test]
+    fn signing_disabled_leaves_rows_unsigned() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [signing]
+            backend = "none"
+
+            [[artifacts]]
+            kind = "oci-image"
+            name = "api"
+            context = "rust/"
+            dockerfile = "rust/bins/api/Dockerfile"
+            registry = "ghcr.io/example/api"
+        "#})
+        .unwrap();
+        let m = build_matrix(&cfg);
+        assert_eq!(m[0].sign, None);
+        assert!(m[0].fulcio_url.is_none());
+    }
+
+    #[test]
+    fn custom_sigstore_urls_thread_into_rows() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [signing]
+            fulcio_url = "https://fulcio.internal.example"
+            rekor_url = "https://rekor.internal.example"
+
+            [[artifacts]]
+            kind = "cli-binary"
+            name = "porter"
+            package = "porter-cli"
+            targets = ["x86_64-unknown-linux-gnu"]
+        "#})
+        .unwrap();
+        let m = build_matrix(&cfg);
+        assert_eq!(
+            m[0].fulcio_url.as_deref(),
+            Some("https://fulcio.internal.example")
+        );
+        assert_eq!(
+            m[0].rekor_url.as_deref(),
+            Some("https://rekor.internal.example")
+        );
+    }
+
+    #[test]
+    fn signing_fields_serialize_only_when_present() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [[artifacts]]
+            kind = "npm-package"
+            name = "sdk"
+            path = "ts/packages/sdk"
+        "#})
+        .unwrap();
+        let v = render_for_actions(&build_matrix(&cfg));
+        let row = &v["include"][0];
+        assert!(row.get("sign").is_none());
+        assert!(row.get("fulcio_url").is_none());
     }
 
     #[test]

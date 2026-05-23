@@ -124,6 +124,15 @@ fn default_cli_targets() -> Vec<String> {
     ]
 }
 
+/// How releases are signed.
+///
+/// Signing is opt-in: with no `[signing]` block, releases aren't signed
+/// (see [`Config::signing`]). Adding the block — empty is enough — turns
+/// on keyless Sigstore for *every* signable artifact (oci-image,
+/// helm-chart, cli-binary), each getting a signature plus a SLSA
+/// provenance attestation. `backend = "none"` is an explicit off-switch
+/// for keeping the block while disabling. This struct's [`Default`] is
+/// exactly what an empty `[signing]` block parses to.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SigningConfig {
     #[serde(default)]
@@ -132,6 +141,34 @@ pub struct SigningConfig {
     pub fulcio_url: String,
     #[serde(default = "default_rekor")]
     pub rekor_url: String,
+}
+
+impl Default for SigningConfig {
+    fn default() -> Self {
+        Self {
+            backend: SigningBackend::default(),
+            fulcio_url: default_fulcio(),
+            rekor_url: default_rekor(),
+        }
+    }
+}
+
+impl SigningConfig {
+    /// The config used when there's no `[signing]` block: signing off.
+    #[must_use]
+    fn disabled() -> Self {
+        Self {
+            backend: SigningBackend::None,
+            ..Self::default()
+        }
+    }
+
+    /// Whether signing should run. False only when the backend is
+    /// `none` (either explicit or the absent-block default).
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        !matches!(self.backend, SigningBackend::None)
+    }
 }
 
 fn default_fulcio() -> String {
@@ -145,8 +182,11 @@ fn default_rekor() -> String {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SigningBackend {
+    /// Keyless signing via Sigstore (Fulcio for certs, Rekor for the
+    /// transparency log), using the CI runner's OIDC token.
     #[default]
     Sigstore,
+    /// Disable signing entirely.
     None,
 }
 
@@ -203,6 +243,14 @@ impl Config {
     /// validation.
     pub fn from_toml(body: &str) -> Result<Self> {
         toml::from_str(body).context("invalid porter.toml")
+    }
+
+    /// Resolve the effective signing configuration. Signing is opt-in: an
+    /// absent `[signing]` block resolves to disabled, so a consumer gets
+    /// signing only once they add the block (no other config required).
+    #[must_use]
+    pub fn signing(&self) -> SigningConfig {
+        self.signing.clone().unwrap_or_else(SigningConfig::disabled)
     }
 
     /// Find `porter.toml` by walking up from `start`.
@@ -294,6 +342,50 @@ mod tests {
         assert_eq!(cfg.artifacts.len(), 2);
         assert!(cfg.signing.is_some());
         assert!(cfg.attestation.is_some());
+    }
+
+    #[test]
+    fn signing_off_when_block_absent() {
+        let cfg = Config::from_toml("").unwrap();
+        assert!(cfg.signing.is_none());
+        assert!(!cfg.signing().enabled());
+    }
+
+    #[test]
+    fn empty_signing_block_enables_public_sigstore() {
+        // Zero config beyond declaring the block: signing turns on with
+        // public Sigstore endpoints.
+        let cfg = Config::from_toml("[signing]\n").unwrap();
+        let signing = cfg.signing();
+        assert!(signing.enabled());
+        assert_eq!(signing.backend, SigningBackend::Sigstore);
+        assert_eq!(signing.fulcio_url, "https://fulcio.sigstore.dev");
+        assert_eq!(signing.rekor_url, "https://rekor.sigstore.dev");
+    }
+
+    #[test]
+    fn signing_backend_none_disables() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [signing]
+            backend = "none"
+        "#})
+        .unwrap();
+        assert!(!cfg.signing().enabled());
+    }
+
+    #[test]
+    fn signing_custom_urls_parse() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [signing]
+            backend = "sigstore"
+            fulcio_url = "https://fulcio.internal.example"
+            rekor_url = "https://rekor.internal.example"
+        "#})
+        .unwrap();
+        let signing = cfg.signing();
+        assert!(signing.enabled());
+        assert_eq!(signing.fulcio_url, "https://fulcio.internal.example");
+        assert_eq!(signing.rekor_url, "https://rekor.internal.example");
     }
 
     #[test]

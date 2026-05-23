@@ -69,27 +69,38 @@ step described in [`app/README.md`](../app/README.md).
 
 ## Phase D — attestation
 
-**Status:** ⏳ scaffolded, signing wired in CI but not yet exercised
-end-to-end.
+**Status:** ⏳ implemented across all signable kinds; not yet exercised
+end-to-end by a real consumer.
 
-Each cli-binary release produces an in-toto v1 Statement with SLSA
-Build Provenance v1 as the predicate. `porter attest` emits the
-*unsigned* statement as JSON; the signing step in `release.yml` pipes
-it through `cosign attest-blob` to wrap it in a DSSE envelope and
-sign with Sigstore (Fulcio + Rekor) using the workflow's OIDC token.
+Signing is config-driven via `[signing]` (opt-in: add the block to turn
+on keyless Sigstore) and uniform across artifact kinds. `porter matrix`
+stamps each signable row; `release.yml` signs and attaches SLSA Build
+Provenance v1:
 
-Consumers verify the chain with `cosign verify-attestation` against
-the porter App's identity. The Phase C ruleset is the cryptographic
-anchor: because only the App can mint a release, the App's identity
-in the attestation is meaningful.
+- `oci-image` and `helm-chart`: `cosign sign` + `cosign attest --type
+  slsaprovenance1` by registry digest.
+- `cli-binary`: `cosign sign-blob` + `cosign attest-blob`, detached
+  bundles uploaded to the Release.
+
+porter owns the *predicate* (`porter attest --emit predicate`) — build
+identity, source, invocation — and cosign owns the *subject*, computing
+the digest from the artifact it signs and building the in-toto Statement.
+porter's own self-release is wired the same way (gated on porter.toml's
+`[signing]`), ready to dogfood the moment signing is switched on.
+
+Consumers verify the chain with `cosign verify-attestation` (images) or
+`cosign verify-blob-attestation` (binaries) against the porter App's
+identity. The Phase C ruleset is the cryptographic anchor: because only
+the App can mint a release, the App's identity in the attestation is
+meaningful.
 
 What's left:
-- Sign + verify roundtrip exercised in CI.
+- Sign + verify roundtrip exercised in CI against a real consumer.
 - `cosign verify-attestation` integration baked into `setup-porter`
   or a sibling action so consumers don't need to wire the verification
   themselves.
-- Attestation kinds beyond cli-binary (oci-image gets DSSE-wrapped
-  buildkit attestations; helm-chart needs its own predicate).
+- A first-class registry-login hook for non-GHCR registries (ECR, Docker
+  Hub) so OCI signing works without a consumer-side login step.
 
 ## Phase E — admission policy
 

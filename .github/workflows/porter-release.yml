@@ -108,6 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write  # OIDC token for cosign keyless signing
     steps:
       - uses: actions/checkout@v5
         with:
@@ -151,6 +152,44 @@ jobs:
             gh release create "$TAG" --title "$TAG" --notes-file "$notes_file"
           fi
           gh release upload "$TAG" --clobber dist/*.tar.gz dist/checksums.txt
+
+      # Dogfood: when porter.toml opts into signing, porter signs its own
+      # binaries exactly the way the reusable release.yml signs a
+      # consumer's cli-binary artifacts. Signing is opt-in, so this is
+      # gated on porter.toml's [signing] block (off ⇒ these steps skip).
+      - name: Determine signing
+        id: signing
+        run: |
+          set -euo pipefail
+          enabled=$(./target/release/porter matrix --kind cli-binary --compact \
+            | jq -r '[.include[].sign] | any')
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        if: steps.signing.outputs.enabled == 'true'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign + attest binaries
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Pin the source ref to the tag explicitly: on the
+          # workflow_dispatch path GITHUB_REF is the branch, not the tag.
+          ./target/release/porter attest --emit predicate \
+            --source-ref "refs/tags/${TAG}" > predicate.json
+          for art in dist/*.tar.gz; do
+            base="$(basename "$art" .tar.gz)"
+            sig="dist/${base}.sig.bundle"
+            att="dist/${base}.att.bundle"
+            cosign sign-blob --yes --bundle "$sig" "$art"
+            cosign attest-blob --yes \
+              --predicate predicate.json --type slsaprovenance1 \
+              --bundle "$att" "$art"
+            gh release upload "$TAG" --clobber "$sig" "$att"
+          done
 
       - name: Update major-version floating tag
         env:

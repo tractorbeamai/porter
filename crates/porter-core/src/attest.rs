@@ -1,12 +1,22 @@
 //! `porter attest` — emit in-toto v1 Statements with SLSA Build
 //! Provenance v1 as the predicate.
 //!
-//! Phase D scaffolding: this module produces *unsigned* statements as
-//! JSON. The signing layer (Sigstore keyless via Fulcio + Rekor) wraps
-//! the statement in a DSSE envelope; that wrap happens in CI by piping
-//! the output of `porter attest` through `cosign attest`. We deliberately
-//! keep the pure-data part of attestation in Rust so it's testable and
-//! reproducible from the same binary developers run locally.
+//! This module produces *unsigned* provenance as JSON; the Sigstore
+//! keyless signing layer (Fulcio + Rekor) wraps it in a DSSE envelope in
+//! CI via `cosign`. We deliberately keep the pure-data part of
+//! attestation in Rust so it's testable and reproducible from the same
+//! binary developers run locally.
+//!
+//! Two emission shapes, for two `cosign` entry points:
+//!
+//! - [`build_provenance`] returns just the SLSA provenance *predicate*.
+//!   This is what `cosign attest --type slsaprovenance1` (images) and
+//!   `cosign attest-blob` (binaries) consume — cosign builds the
+//!   surrounding in-toto Statement and sets the `subject` to the digest
+//!   it actually signed. This is the path the release workflow uses.
+//! - [`build_statement`] returns a complete in-toto v1 Statement,
+//!   subject included. Useful standalone (e.g. emitting an attestation
+//!   to inspect or store without cosign computing the subject).
 //!
 //! References:
 //! - in-toto v1 Statement format:
@@ -135,6 +145,35 @@ pub fn build_statement(input: &AttestInput) -> Result<Statement> {
         digest,
     };
 
+    let predicate = build_provenance(input)?;
+
+    Ok(Statement {
+        typ: STATEMENT_TYPE.into(),
+        subject: vec![subject],
+        predicate_type: PROVENANCE_PREDICATE_TYPE.into(),
+        predicate,
+    })
+}
+
+/// Build just the SLSA Build Provenance v1 predicate as JSON, without
+/// wrapping it in an in-toto Statement.
+///
+/// This is what gets fed to `cosign attest`/`attest-blob --type
+/// slsaprovenance1`: cosign constructs the surrounding Statement itself,
+/// computing the `subject` from the artifact (image digest or blob hash)
+/// it's attesting. porter owns the *predicate* — the build identity,
+/// source, and invocation metadata that a downstream policy verifies —
+/// and lets cosign own the subject so the digest is always the thing
+/// cosign actually signed. The subject fields on [`AttestInput`] are
+/// ignored here; they only matter for the standalone [`build_statement`]
+/// form.
+///
+/// # Errors
+///
+/// Returns an error if `input.source_repo` is not in a recognized form
+/// (`owner/repo` short form or a full `https://...` URL), or if the
+/// constructed provenance value fails to serialize.
+pub fn build_provenance(input: &AttestInput) -> Result<serde_json::Value> {
     let repo_url = normalize_repo_url(&input.source_repo)?;
 
     let invocation_id = format!(
@@ -187,14 +226,7 @@ pub fn build_statement(input: &AttestInput) -> Result<Statement> {
         },
     };
 
-    let predicate = serde_json::to_value(&provenance).context("serializing SLSA provenance")?;
-
-    Ok(Statement {
-        typ: STATEMENT_TYPE.into(),
-        subject: vec![subject],
-        predicate_type: PROVENANCE_PREDICATE_TYPE.into(),
-        predicate,
-    })
+    serde_json::to_value(&provenance).context("serializing SLSA provenance")
 }
 
 /// Compute SHA-256 of a file as a lowercase hex string.
@@ -366,6 +398,38 @@ mod tests {
         input.source_repo = "git@github.com:tractorbeamai/porter.git".into();
         let err = build_statement(&input).unwrap_err().to_string();
         assert!(err.contains("not a recognized form"), "got: {err}");
+    }
+
+    #[test]
+    fn build_provenance_matches_statement_predicate() {
+        let input = fixture();
+        let predicate = build_provenance(&input).unwrap();
+        let stmt = build_statement(&input).unwrap();
+        // The predicate cosign embeds must be byte-for-byte the predicate
+        // the standalone statement carries.
+        assert_eq!(predicate, stmt.predicate);
+    }
+
+    #[test]
+    fn build_provenance_has_no_subject_or_statement_wrapper() {
+        let predicate = build_provenance(&fixture()).unwrap();
+        // It's the bare predicate: builder/run/build fields at the top
+        // level, no `_type`/`subject`/`predicateType` wrapper that would
+        // double-nest once cosign builds the statement.
+        assert!(predicate.get("_type").is_none());
+        assert!(predicate.get("subject").is_none());
+        assert!(predicate.get("predicateType").is_none());
+        assert_eq!(predicate["runDetails"]["builder"]["id"], BUILDER_ID);
+    }
+
+    #[test]
+    fn build_provenance_ignores_subject_fields() {
+        let mut input = fixture();
+        input.subject_name = "ghcr.io/x/api".into();
+        input.subject_sha256 = "0".repeat(64);
+        let a = build_provenance(&input).unwrap();
+        let b = build_provenance(&fixture()).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]

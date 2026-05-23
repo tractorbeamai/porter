@@ -20,8 +20,9 @@ use anyhow::{Context as _, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use porter_core::{
     AttestInput, BuildOpts, Bump, Changeset, ChangesetSet, Config, append_checksum,
-    apply_next_version, build_cli_binary, build_matrix, build_statement, compute_next_version,
-    current_version, render_for_actions, sha256_hex, slugify, write_changeset,
+    apply_next_version, build_cli_binary, build_matrix, build_provenance, build_statement,
+    compute_next_version, current_version, render_for_actions, sha256_hex, slugify,
+    write_changeset,
 };
 
 #[derive(Parser)]
@@ -57,7 +58,8 @@ enum Command {
     /// Build a release artifact (currently `cli-binary` is implemented).
     #[command(subcommand)]
     Build(BuildCmd),
-    /// Emit an unsigned in-toto v1 Statement for an artifact (Phase D).
+    /// Emit unsigned SLSA provenance for an artifact: a bare predicate
+    /// for `cosign attest` to wrap, or a complete in-toto v1 Statement.
     Attest(AttestArgs),
 }
 
@@ -118,10 +120,27 @@ enum BuildCmd {
     CliBinary(BuildCliBinaryArgs),
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
+enum AttestEmit {
+    /// A complete in-toto v1 Statement (subject + predicate). Requires
+    /// the artifact so its digest can fill the subject.
+    Statement,
+    /// Just the SLSA provenance predicate, for `cosign attest --type
+    /// slsaprovenance1` to wrap and sign (cosign sets the subject).
+    Predicate,
+}
+
 #[derive(Args)]
 struct AttestArgs {
-    /// Path to the artifact file to attest.
-    artifact: PathBuf,
+    /// What to emit. `statement` (the default) is a self-contained
+    /// in-toto Statement; `predicate` emits just the SLSA provenance for
+    /// `cosign attest --type slsaprovenance1` to wrap and sign.
+    #[arg(long, value_enum, default_value_t = AttestEmit::Statement)]
+    emit: AttestEmit,
+    /// Path to the artifact file to attest. Required for `--emit
+    /// statement` (used to compute the subject digest); ignored for
+    /// `--emit predicate`, where cosign computes the subject itself.
+    artifact: Option<PathBuf>,
     /// Override the subject name in the statement (defaults to the file's basename).
     #[arg(long)]
     subject_name: Option<String>,
@@ -470,23 +489,35 @@ fn cmd_build_cli_binary(root: &Path, config: &Config, args: BuildCliBinaryArgs) 
 }
 
 fn cmd_attest(args: AttestArgs) -> Result<()> {
-    let sha256 = sha256_hex(&args.artifact)?;
-    let subject_name = args.subject_name.unwrap_or_else(|| {
-        args.artifact.file_name().map_or_else(
-            || args.artifact.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        )
-    });
+    // For a full statement we need the artifact's digest to fill the
+    // subject; for a bare predicate cosign computes the subject from the
+    // artifact it signs, so the file is unnecessary here.
+    let (subject_name, subject_sha256) = match args.emit {
+        AttestEmit::Statement => {
+            let artifact = args.artifact.as_deref().context(
+                "--emit statement requires an artifact path to compute the subject digest",
+            )?;
+            let sha256 = sha256_hex(artifact)?;
+            let name = args.subject_name.unwrap_or_else(|| {
+                artifact.file_name().map_or_else(
+                    || artifact.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                )
+            });
+            (name, sha256)
+        }
+        AttestEmit::Predicate => (String::new(), String::new()),
+    };
 
     // The CLI's compile-time version doubles as the builder version
-    // recorded in the statement; consumers can pin policy against this.
+    // recorded in the provenance; consumers can pin policy against this.
     let porter_version = env!("CARGO_PKG_VERSION").to_owned();
 
     let finished_on = args.finished_on.or_else(|| Some(porter_core::today_utc()));
 
     let input = AttestInput {
         subject_name,
-        subject_sha256: sha256,
+        subject_sha256,
         source_repo: args.source_repo,
         source_ref: args.source_ref,
         source_sha: args.source_sha,
@@ -497,8 +528,12 @@ fn cmd_attest(args: AttestArgs) -> Result<()> {
         finished_on,
         porter_version,
     };
-    let stmt = build_statement(&input)?;
-    println!("{}", serde_json::to_string_pretty(&stmt)?);
+
+    let json = match args.emit {
+        AttestEmit::Statement => serde_json::to_string_pretty(&build_statement(&input)?)?,
+        AttestEmit::Predicate => serde_json::to_string_pretty(&build_provenance(&input)?)?,
+    };
+    println!("{json}");
     Ok(())
 }
 

@@ -47,9 +47,10 @@
 //!   BSD-format SHA-256 line into `dist/checksums.txt`.
 //! - [`matrix`] — fan `[[artifacts]]` entries out into a GitHub Actions
 //!   `strategy.matrix.include` array.
-//! - [`attest`] — build an unsigned in-toto v1 Statement with SLSA Build
-//!   Provenance v1 as the predicate (Phase D scaffolding; signing wraps
-//!   this output in a DSSE envelope via `cosign`).
+//! - [`attest`] — build SLSA Build Provenance v1, either as a bare
+//!   predicate (for `cosign attest`/`attest-blob` to wrap and sign) or a
+//!   complete in-toto v1 Statement. Signing happens in CI via `cosign`;
+//!   this layer owns the reproducible, testable provenance data.
 //!
 //! # Example
 //!
@@ -95,7 +96,7 @@ pub mod version;
 pub mod versioned_files;
 
 pub use apply::{ApplyResult, apply_next_version, current_version};
-pub use attest::{AttestInput, Statement, build_statement, sha256_hex};
+pub use attest::{AttestInput, Statement, build_provenance, build_statement, sha256_hex};
 pub use build::{BuildArtifact, BuildOpts, append_checksum, build_cli_binary};
 pub use changelog::{prepend_section, render_section, today_utc};
 pub use changeset::{Bump, Changeset, ChangesetSet, write_changeset};

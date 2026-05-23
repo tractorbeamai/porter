@@ -150,14 +150,24 @@
     "signing": {
       "type": "object",
       "additionalProperties": false,
+      "description": "Cosign signing for signable artifacts (oci-image, helm-chart, cli-binary). Opt-in: an absent block means releases are NOT signed. Adding the block (empty is enough) turns on keyless Sigstore. Set backend to \"none\" to keep the block while disabling.",
       "properties": {
         "backend": {
           "type": "string",
           "enum": ["sigstore", "none"],
-          "default": "sigstore"
+          "default": "sigstore",
+          "description": "\"sigstore\" signs keyless via Fulcio/Rekor using the CI OIDC token; \"none\" disables signing."
         },
-        "fulcio_url": { "type": "string", "default": "https://fulcio.sigstore.dev" },
-        "rekor_url": { "type": "string", "default": "https://rekor.sigstore.dev" }
+        "fulcio_url": {
+          "type": "string",
+          "default": "https://fulcio.sigstore.dev",
+          "description": "Fulcio CA endpoint. Override only for a private Sigstore instance."
+        },
+        "rekor_url": {
+          "type": "string",
+          "default": "https://rekor.sigstore.dev",
+          "description": "Rekor transparency log endpoint. Override only for a private Sigstore instance."
+        }
       }
     },
     "attestation": {
