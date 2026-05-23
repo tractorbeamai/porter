@@ -21,7 +21,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
@@ -44,7 +44,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
@@ -55,7 +55,7 @@ jobs:
   setup-porter-bats:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
@@ -79,12 +79,12 @@ jobs:
       matrix:
         task: [fmt, clippy, test]
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
       - name: Cache cargo registry & target
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.cargo/registry
@@ -99,13 +99,16 @@ jobs:
         if: matrix.task == 'fmt'
         run: cargo fmt --all -- --check
 
+      # `--locked` here is deliberate: it fails CI if Cargo.lock drifts from
+      # Cargo.toml, instead of letting the gap surface only in the release
+      # workflow (which builds `--locked`). Keeps the committed lock honest.
       - name: clippy
         if: matrix.task == 'clippy'
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: test
         if: matrix.task == 'test'
-        run: cargo test --workspace --all-targets
+        run: cargo test --workspace --all-targets --locked
 
   # cargo-deny advisories: audit the dependency graph against the RustSec
   # advisory database. Mirrors constellation's rustsec toolchain; policy
@@ -113,7 +116,7 @@ jobs:
   cargo-deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
@@ -143,7 +146,7 @@ jobs:
       # expansion — the standard zizmor pattern.
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
 
