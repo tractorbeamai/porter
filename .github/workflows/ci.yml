@@ -31,15 +31,10 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
 
-  # zizmor: security-focused Actions linter. Catches template injection,
-  # persistent-credentials checkout, untrusted-input patterns, etc.
-  # Repo-wide policies live in .github/zizmor.yml (auto-discovered).
-  #
-  # Runs as the official action (zizmorcore/zizmor-action) with online
-  # audits on by default — these query the GitHub API via github.token
-  # and findings upload to the Security tab as SARIF. The SARIF upload
-  # needs security-events: write, so zizmor lives in its own job rather
-  # than sharing workflow-lint's contents-read-only scope.
+  # zizmor: static analysis for GitHub Actions, catching security issues
+  # like template injection and over-broad token permissions. Its online
+  # audits need security-events: write to upload SARIF, so it gets its
+  # own job rather than widening workflow-lint's scope.
   zizmor:
     name: zizmor
     runs-on: ubuntu-latest
@@ -51,8 +46,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: zizmor
-        uses: zizmorcore/zizmor-action@v0.5.6
+      - uses: zizmorcore/zizmor-action@v0.5.6
 
   setup-porter-bats:
     name: setup-porter bats
