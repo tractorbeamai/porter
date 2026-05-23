@@ -1,4 +1,4 @@
-name: porter / self-release
+name: porter-release
 
 # Builds and publishes porter's own binaries when a `v*` tag is pushed.
 # This is what `setup-porter` consumes from the GitHub Releases page.

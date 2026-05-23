@@ -2,6 +2,7 @@ name: ci
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
 
@@ -14,7 +15,6 @@ concurrency:
 
 jobs:
   workflow-lint:
-    name: workflow-lint
     runs-on: ubuntu-latest
     # pull-requests: write lets reviewdog post inline review comments.
     permissions:
@@ -39,7 +39,6 @@ jobs:
   # audits need security-events: write to upload SARIF, so it gets its
   # own job rather than widening workflow-lint's scope.
   zizmor:
-    name: zizmor
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -49,10 +48,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # Patch-pinned (not a floating major like other actions) because
+      # zizmor-action publishes no `v0` tag; Renovate bumps it.
       - uses: zizmorcore/zizmor-action@v0.5.6
 
   setup-porter-bats:
-    name: setup-porter bats
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -110,8 +110,7 @@ jobs:
   # cargo-deny advisories: audit the dependency graph against the RustSec
   # advisory database. Mirrors constellation's rustsec toolchain; policy
   # (and any accepted advisories) lives in deny.toml.
-  deny:
-    name: cargo-deny
+  cargo-deny:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
