@@ -33,11 +33,15 @@ pub fn compute_next_version(current: &Version, set: &ChangesetSet) -> Result<Opt
 }
 
 const fn bumped(v: &Version, bump: Bump) -> Version {
+    // Under 1.0.0, SemVer's "initial development" clause treats the public
+    // API as unstable, so digit significance shifts left: a `major` change
+    // bumps the minor (0.1.0 -> 0.2.0) while `minor` and `patch` both bump
+    // the patch (0.1.0 -> 0.1.1). This is why a minor changeset produces a
+    // patch-position bump pre-1.0. At/after 1.0.0 the usual rules apply.
+    // Matches Changesets and Cargo's 0.x compatibility handling.
+    // https://semver.org/#spec-item-4
     match bump {
         Bump::Major => {
-            // 0.x is treated specially: a "major" change before 1.0 is a minor
-            // bump of the leading zero, matching semver's pre-1.0 convention
-            // and Changesets' default behavior.
             if v.major == 0 {
                 Version::new(0, v.minor + 1, 0)
             } else {
