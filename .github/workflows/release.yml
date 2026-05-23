@@ -11,6 +11,10 @@ name: porter / release
 # the repo's `[signing]` config). The cosign steps below, gated on
 # `matrix.sign`, then sign and attach SLSA provenance — by registry
 # digest for images/charts, as detached bundles for binaries.
+#
+# Credential policy: see README "Privileged tagger". In short: the App
+# token (passed in as `app-token`) writes the protected `vX.Y.Z` tag;
+# GITHUB_TOKEN handles release uploads, registry login, and OIDC signing.
 
 on:
   workflow_call:
@@ -59,6 +63,8 @@ jobs:
         with:
           version: ${{ inputs.porter-version }}
 
+      # credential: app-token — pushes the protected vX.Y.Z tag; the ruleset
+      # rejects a tag push from any other identity.
       - id: cut
         env:
           GH_TOKEN: ${{ secrets.app-token }}
@@ -87,6 +93,10 @@ jobs:
             echo "has-artifacts=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # credential: app-token — deliberate exception to "API calls → github.token".
+      # The tag already exists, so `gh release create` is an API call that
+      # github.token could make; we use the App token so the release is authored
+      # by porter[bot] (provenance), and the token is already in this job.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.app-token }}
@@ -135,6 +145,8 @@ jobs:
       # the workflow token. Other registries (ECR, Docker Hub, …) need
       # credentials this reusable workflow can't supply generically — see
       # docs/artifact-kinds.md for how to wire them.
+      # credential: github.token — registry auth, not a git ref write; the
+      # auto-scoped token (packages: write above) is the right tool.
       - name: Log in to GHCR
         if: (matrix.kind == 'oci-image' || matrix.kind == 'helm-chart') && contains(matrix.registry, 'ghcr.io')
         uses: docker/login-action@v3
@@ -157,6 +169,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: porter build cli-binary --name "$NAME" --target "$TARGET"
 
+      # credential: github.token — uploads to the already-created release; an
+      # API call, not a ref write.
       - name: Upload cli-binary tarball
         if: matrix.kind == 'cli-binary'
         env:
@@ -176,6 +190,8 @@ jobs:
       # `.att.bundle` (the provenance `cosign verify-attestation` checks).
       # cosign builds the in-toto statement from the predicate porter
       # emits, setting the subject to the tarball's own digest.
+      # credential: github.token — cosign signs keyless via OIDC (id-token:
+      # write above); the token here only uploads the bundles to the release.
       - name: Sign + attest cli-binary
         if: matrix.kind == 'cli-binary' && matrix.sign == 'true'
         env:
@@ -338,6 +354,8 @@ jobs:
           ref: ${{ needs.tag.outputs.tag }}
           persist-credentials: false
 
+      # credential: github.token — downloads/re-uploads release assets; API
+      # calls, not ref writes.
       - name: Merge per-row checksums
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1,0 +1,52 @@
+name: Mint porter token
+description: |
+  Mint a scoped porter App installation token (`porter[bot]`) for protected-ref
+  writes — the credential the repo rulesets allow to push `main` and `v*` tags.
+  See the README "Privileged tagger" section for the credential policy.
+
+  Thin wrapper around `actions/create-github-app-token` that bakes in porter's
+  conventions so the minting boilerplate isn't copy-pasted across workflows.
+  Unlike `setup-porter`, this action is pure YAML with no shell logic, so there
+  is no `setup.sh` and no bats suite — there is nothing to test beyond the
+  upstream action it delegates to.
+
+  Pass only the permissions you need; an omitted permission simply isn't
+  requested. Always pass at least one — `create-github-app-token` inherits the
+  App installation's *full* permission set when no `permission-*` input is set,
+  which defeats the point of scoping.
+author: Tractorbeam
+
+inputs:
+  app-id:
+    description: porter App ID — `secrets.PORTER_APP_ID`.
+    required: true
+  private-key:
+    description: porter App private key — `secrets.PORTER_APP_PRIVATE_KEY`.
+    required: true
+  permission-contents:
+    description: Scope for the `contents` permission (e.g. `write`). Omit to not request it.
+    required: false
+    default: ""
+  permission-pull-requests:
+    description: Scope for the `pull-requests` permission (e.g. `write`). Omit to not request it.
+    required: false
+    default: ""
+
+outputs:
+  token:
+    description: The minted installation access token.
+    value: ${{ steps.app-token.outputs.token }}
+
+runs:
+  using: composite
+  steps:
+    # Empty-string permission inputs are skipped by create-github-app-token
+    # (it ignores any falsy `permission-*`), so unset scopes are simply not
+    # requested rather than erroring.
+    - id: app-token
+      uses: actions/create-github-app-token@v2
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        permission-contents: ${{ inputs.permission-contents }}
+        permission-pull-requests: ${{ inputs.permission-pull-requests }}
