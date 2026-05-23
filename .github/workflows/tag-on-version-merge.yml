@@ -10,6 +10,8 @@ name: tag-on-version-merge
 # current state would carry (`porter release tag`), and push it if
 # the remote doesn't already have it. Idempotent — re-runs on the
 # same commit are a no-op.
+#
+# Credential policy: see README "Privileged tagger".
 
 on:
   push:
@@ -45,14 +47,15 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # credential: app-token — the vX.Y.Z tag is ruleset-protected (only the
+      # porter App may write v*) and its push must trigger porter-release.yml,
+      # which a GITHUB_TOKEN push wouldn't. Scoped to contents (tag push only).
       - id: app-token
         if: steps.tag.outputs.skip != 'true'
-        uses: actions/create-github-app-token@v2
+        uses: ./actions/mint-porter-token
         with:
           app-id: ${{ secrets.PORTER_APP_ID }}
           private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
-          # The token only pushes a tag, so scope it to contents rather
-          # than inheriting the App installation's full permission set.
           permission-contents: write
 
       - name: Push tag
