@@ -1,4 +1,4 @@
-name: version
+name: version-self
 
 # porter dogfoods its own rolling-Version-PR workflow. On every push
 # to main, the reusable `version.yml` runs `porter status`, applies
@@ -18,6 +18,12 @@ on:
 
 permissions:
   contents: read
+
+# Serialize main pushes so two runs can't race on the version branch's
+# force-push; don't cancel an in-flight run mid-push.
+concurrency:
+  group: version-self-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   mint:

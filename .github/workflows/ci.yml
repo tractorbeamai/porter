@@ -2,6 +2,7 @@ name: ci
 
 on:
   pull_request:
+    branches: [main]
   push:
     branches: [main]
 
@@ -14,34 +15,44 @@ concurrency:
 
 jobs:
   workflow-lint:
-    name: workflow-lint
     runs-on: ubuntu-latest
+    # pull-requests: write lets reviewdog post inline review comments.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
-      # actionlint: GitHub Actions workflow linter (Go binary). Catches
-      # workflow syntax errors, expression typos, undefined matrix
-      # variables, deprecated runner labels. Bundles shellcheck under
-      # the hood and runs it against every `run:` block.
-      - name: actionlint
-        run: |
-          set -euo pipefail
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
-          ./actionlint -color
+      # actionlint: linter for GitHub Actions workflows — syntax errors,
+      # bad expressions, deprecated runners, shellcheck on run blocks.
+      # Wrapped by reviewdog so findings surface as inline PR comments;
+      # fail_level: error keeps real problems blocking the build.
+      - uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error
+          reporter: github-pr-review
 
-      # zizmor: security-focused Actions linter. Catches template
-      # injection, persistent-credentials checkout, untrusted-input
-      # patterns, etc. Repo-wide policies live in .github/zizmor.yml.
-      - name: zizmor
-        run: |
-          set -euo pipefail
-          pipx install zizmor
-          zizmor .
+  # zizmor: static analysis for GitHub Actions, catching security issues
+  # like template injection and over-broad token permissions. Its online
+  # audits need security-events: write to upload SARIF, so it gets its
+  # own job rather than widening workflow-lint's scope.
+  zizmor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Patch-pinned (not a floating major like other actions) because
+      # zizmor-action publishes no `v0` tag; Renovate bumps it.
+      - uses: zizmorcore/zizmor-action@v0.5.6
 
   setup-porter-bats:
-    name: setup-porter bats
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -95,6 +106,20 @@ jobs:
       - name: test
         if: matrix.task == 'test'
         run: cargo test --workspace --all-targets
+
+  # cargo-deny advisories: audit the dependency graph against the RustSec
+  # advisory database. Mirrors constellation's rustsec toolchain; policy
+  # (and any accepted advisories) lives in deny.toml.
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
 
   build-binaries:
     name: build (${{ matrix.target }})

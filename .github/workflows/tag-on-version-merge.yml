@@ -1,4 +1,4 @@
-name: tag on version merge
+name: tag-on-version-merge
 
 # When a commit that bumps the workspace version lands on main —
 # typically the merged "Version Packages" PR opened by `version.yml`,
@@ -17,6 +17,12 @@ on:
 
 permissions:
   contents: read
+
+# Serialize main pushes so concurrent runs can't race on the tag push;
+# don't cancel an in-flight tag/release mid-push.
+concurrency:
+  group: tag-on-version-merge-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   tag:
