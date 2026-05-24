@@ -31,14 +31,6 @@ concurrency:
 jobs:
   rolling-pr:
     uses: ./.github/workflows/version.yml
-    # TEMPORARY (remove once 0.1.1 is released): version-self installs the
-    # released porter via setup-porter, and the current release (0.1.0)
-    # predates `version_pr_title`, so it can't render porter.toml's title.
-    # This override gives the 0.1.1 Version PR its `chore(release): <next>`
-    # title now. Once 0.1.1 ships, `latest` has the field and porter.toml
-    # drives the title — drop this `with:` block then.
-    with:
-      title: "chore(release)"
     secrets:
       app-id: ${{ secrets.PORTER_APP_ID }}
       app-private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
