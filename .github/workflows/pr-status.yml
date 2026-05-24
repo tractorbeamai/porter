@@ -16,12 +16,23 @@ on:
         required: false
         type: string
         default: latest
+      version-branch:
+        description: |
+          The rolling Version PR's branch. pr-status stays silent on it —
+          that PR deliberately carries no changesets (it consumes them), so
+          the "no changeset detected" nudge would be wrong and noisy. Match
+          `version.yml`'s `branch` input if you've customized it.
+        required: false
+        type: string
+        default: porter/version
 
 permissions:
   contents: read
 
 jobs:
   comment:
+    # Skip porter's own Version PR; see the `version-branch` input.
+    if: github.head_ref != inputs.version-branch
     runs-on: ubuntu-latest
     permissions:
       contents: read
