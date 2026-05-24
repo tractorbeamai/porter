@@ -27,6 +27,13 @@ approval_rules:
     options:
       invalidate_on_push: true
       ignore_update_merges: true
+      # Accept a `/approve` comment as well as a native GitHub review. The
+      # rolling Version PR is authored by porter[bot], and GitHub blocks
+      # authors from approving their own PRs — so without a comment method a
+      # solo maintainer has no way to clear this gate each release.
+      methods:
+        github_review: true
+        comments: ["/approve"]
 
   # Renovate can satisfy approval on its own PRs. The CI gate above is
   # the safety net.
