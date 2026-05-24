@@ -145,11 +145,10 @@ jobs:
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:$BRANCH"
 
           notes=$(porter release notes || true)
-          # printf's format string is intentionally single-quoted so
-          # the backticks render literally (markdown code fence); the
-          # data args do the variable expansion.
-          # shellcheck disable=SC2016
-          body=$(printf '%s\n\n```\n%s\n```\n' \
+          # `porter release notes` emits markdown (a `### Features` section,
+          # bullets); include it unfenced so the PR body renders it as
+          # formatted release notes rather than a literal code block.
+          body=$(printf '%s\n\n%s\n' \
             "Rolling release PR maintained by porter. Merging this lands version **$NEXT** and triggers the release workflow." \
             "$notes")
 
