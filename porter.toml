@@ -4,11 +4,20 @@
 directory = ".changeset"
 mode = "single"
 
-# Version-bearing files for porter itself. Just the Cargo workspace for
-# now — the workspace.package.version cascades to every member crate.
+# Version-bearing files for porter itself. The Cargo workspace version
+# cascades to every member crate...
 [[versioned_files]]
 type = "cargo-workspace"
 path = "Cargo.toml"
+
+# ...and Cargo.lock records that same version for each workspace member, so
+# it must be bumped in lockstep or `cargo build --locked` (CI + the release
+# workflow) fails. cargo-workspace doesn't touch the lock yet, so rewrite the
+# two member entries here. (Other crates' versions never match this pattern.)
+[[versioned_files]]
+type = "regex"
+path = "Cargo.lock"
+pattern = 'name = "porter-(?:core|cli)"\nversion = "(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"'
 
 [release]
 tag_prefix = "v"
