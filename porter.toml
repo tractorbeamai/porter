@@ -13,6 +13,9 @@ path = "Cargo.toml"
 [release]
 tag_prefix = "v"
 changelog = "CHANGELOG.md"
+# Conventional Commits subject for the rolling Version PR, so the
+# squash-merged release commit reads `chore(release): X.Y.Z` on main.
+version_pr_title = "chore(release): {version}"
 
 # porter publishes a single artifact: itself. The cli-binary block
 # expands per-target inside the release workflow's matrix; each row runs
