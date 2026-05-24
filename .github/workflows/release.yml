@@ -62,7 +62,7 @@ jobs:
           # scoped to a single `git push` invocation.
           persist-credentials: false
 
-      - uses: tractorbeamai/porter/actions/setup-porter@ff06cce9e0249e0ce3b2b285b7de370739b50ef6 # v0
+      - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
         with:
           version: ${{ inputs.porter-version }}
 
@@ -144,7 +144,7 @@ jobs:
           ref: ${{ needs.tag.outputs.tag }}
           persist-credentials: false
 
-      - uses: tractorbeamai/porter/actions/setup-porter@ff06cce9e0249e0ce3b2b285b7de370739b50ef6 # v0
+      - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
         with:
           version: ${{ inputs.porter-version }}
 
