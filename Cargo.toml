@@ -29,7 +29,7 @@ walkdir = "=2.5.0"
 time = { version = "=0.3.47", features = ["formatting", "macros"] }
 sha2 = "=0.11.0"
 flate2 = "=1.1.9"
-tar = "=0.4.45"
+tar = "=0.4.46"
 hex = "=0.4.3"
 clap = { version = "=4.6.1", features = ["derive", "env", "wrap_help"] }
 indoc = "=2.0.7"
