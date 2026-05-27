@@ -175,15 +175,30 @@ jobs:
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       # ----- registry login (OCI: oci-image + helm-chart) ----------------
+      # AWS OIDC for aws-ecr registries: mint an sts.amazonaws.com-audience
+      # token from the job's id-token:write (independent of cosign's Sigstore
+      # token) and assume the configured role, so the login step below can run
+      # `aws ecr get-login-password`. Driven by the registry's auth kind alone —
+      # a repo-defined publish command still gets a logged-in context.
+      - name: Configure AWS credentials (aws-ecr)
+        if: (matrix.kind == 'oci-image' || matrix.kind == 'helm-chart') && matrix.auth_kind == 'aws-ecr'
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ matrix.role_arn }}
+          aws-region: ${{ matrix.region }}
+
       # helm push to an OCI registry reads the same ~/.docker/config.json that
-      # `docker login` writes, so one step covers both kinds. Credentials come
-      # from GITHUB_TOKEN (github-token auth) or the `registry-auth` JSON
-      # secret (basic auth), keyed by the secret names porter put on the row.
+      # `docker login` writes; for ECR we also do an explicit `helm registry
+      # login` (same creds) since helm's OCI client can diverge. Credentials come
+      # from GITHUB_TOKEN (github-token), the `registry-auth` JSON secret (basic),
+      # or `aws ecr get-login-password` (aws-ecr, after the step above).
       - name: Registry login
         if: (matrix.kind == 'oci-image' || matrix.kind == 'helm-chart') && matrix.auth_kind != 'none'
         env:
           AUTH_KIND: ${{ matrix.auth_kind }}
           REGISTRY: ${{ matrix.registry }}
+          KIND: ${{ matrix.kind }}
+          REGION: ${{ matrix.region }}
           ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ github.token }}
           REGISTRY_AUTH: ${{ secrets.registry-auth }}
@@ -200,8 +215,11 @@ jobs:
               user=$(jq -r --arg k "$USERNAME_SECRET" '.[$k] // empty' <<< "$REGISTRY_AUTH")
               pass=$(jq -r --arg k "$PASSWORD_SECRET" '.[$k] // empty' <<< "$REGISTRY_AUTH")
               ;;
+            aws-ecr)
+              # Creds are in the env from the configure-aws-credentials step above.
+              user="AWS"; pass=$(aws ecr get-login-password --region "$REGION") ;;
             *)
-              echo "::error::OCI registry auth_kind '$AUTH_KIND' is unsupported (use github-token or basic)" >&2
+              echo "::error::OCI registry auth_kind '$AUTH_KIND' is unsupported (use github-token, basic, or aws-ecr)" >&2
               exit 1 ;;
           esac
           if [[ -z "$pass" ]]; then
@@ -209,6 +227,9 @@ jobs:
             exit 1
           fi
           echo "$pass" | docker login "$host" -u "$user" --password-stdin
+          if [[ "$KIND" == "helm-chart" ]]; then
+            echo "$pass" | helm registry login "$host" -u "$user" --password-stdin
+          fi
 
       # ----- cli-binary --------------------------------------------------
       - name: Add Rust target
@@ -269,9 +290,30 @@ jobs:
         if: matrix.kind == 'oci-image'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      # Idempotent re-runs: if this version is already in the registry, skip the
+      # build & push below. Mandatory for IMMUTABLE registries (e.g. ECR), where
+      # re-pushing an existing tag hard-fails — so a re-run of a partially-failed
+      # release would break without this. The digest is captured either way so
+      # signing can still run against the already-published image (a prior run
+      # that pushed but failed to sign completes on re-run).
+      - name: Resolve image publish state
+        id: image_state
+        if: matrix.kind == 'oci-image'
+        env:
+          REF: ${{ matrix.registry }}:${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          if digest=$(docker buildx imagetools inspect "$REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "::notice::$REF already present at $digest; skipping build & push"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build & push image
         id: build_image
-        if: matrix.kind == 'oci-image'
+        if: matrix.kind == 'oci-image' && steps.image_state.outputs.published != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ matrix.context }}
@@ -286,7 +328,8 @@ jobs:
         env:
           TAG: ${{ matrix.tag }}
           REGISTRY: ${{ matrix.registry }}
-          DIGEST: ${{ steps.build_image.outputs.digest }}
+          # Built this run, or resolved from the already-published image.
+          DIGEST: ${{ steps.build_image.outputs.digest || steps.image_state.outputs.digest }}
           FULCIO_URL: ${{ matrix.fulcio_url }}
           REKOR_URL: ${{ matrix.rekor_url }}
         run: |
@@ -300,9 +343,33 @@ jobs:
             --predicate predicate.json --type slsaprovenance1 "$ref"
 
       # ----- helm-chart --------------------------------------------------
+      # Idempotent re-runs: skip package & push if this chart version is already
+      # in the registry (IMMUTABLE registries like ECR hard-fail on re-push).
+      # The pushed ref + digest are resolved so signing can still run against an
+      # already-published chart.
+      - name: Resolve chart publish state
+        id: chart_state
+        if: matrix.kind == 'helm-chart'
+        env:
+          VERSION: ${{ matrix.version }}
+          CHART: ${{ matrix.chart }}
+          REGISTRY: ${{ matrix.registry }}
+        run: |
+          set -euo pipefail
+          # helm pushes to <registry>/<chart name>; the name is in Chart.yaml.
+          name=$(helm show chart "$CHART" | awk '/^name:/ {print $2; exit}')
+          repo="${REGISTRY#oci://}/${name}"
+          if digest=$(docker buildx imagetools inspect "${repo}:${VERSION}" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "ref=${repo}@${digest}" >> "$GITHUB_OUTPUT"
+            echo "::notice::chart ${name} ${VERSION} already present; skipping package & push"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Package & push Helm chart
         id: push_chart
-        if: matrix.kind == 'helm-chart'
+        if: matrix.kind == 'helm-chart' && steps.chart_state.outputs.published != 'true'
         env:
           VERSION: ${{ matrix.version }}
           CHART: ${{ matrix.chart }}
@@ -340,7 +407,8 @@ jobs:
         if: matrix.kind == 'helm-chart' && matrix.sign == 'true'
         env:
           TAG: ${{ matrix.tag }}
-          REF: ${{ steps.push_chart.outputs.ref }}
+          # Pushed this run, or resolved from the already-published chart.
+          REF: ${{ steps.push_chart.outputs.ref || steps.chart_state.outputs.ref }}
           FULCIO_URL: ${{ matrix.fulcio_url }}
           REKOR_URL: ${{ matrix.rekor_url }}
         run: |

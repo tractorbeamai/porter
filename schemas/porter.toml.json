@@ -212,12 +212,14 @@
       "type": "object",
       "required": ["type"],
       "additionalProperties": false,
-      "description": "Secrets are referenced by name; CI reads them from a single `registry-auth` JSON secret.",
+      "description": "How CI authenticates to the registry. basic/token reference secret names read from a single `registry-auth` JSON secret; aws-ecr uses GitHub OIDC and takes plain role_arn/region (not secrets).",
       "properties": {
-        "type": { "type": "string", "enum": ["none", "github-token", "basic", "token"] },
+        "type": { "type": "string", "enum": ["none", "github-token", "basic", "token", "aws-ecr"] },
         "username_secret": { "type": "string", "description": "For type=basic: secret name of the username." },
         "password_secret": { "type": "string", "description": "For type=basic: secret name of the password." },
-        "token_secret": { "type": "string", "description": "For type=token: secret name of the bearer token." }
+        "token_secret": { "type": "string", "description": "For type=token: secret name of the bearer token." },
+        "role_arn": { "type": "string", "description": "For type=aws-ecr: IAM role ARN to assume via GitHub OIDC (a plain value, not a secret)." },
+        "region": { "type": "string", "description": "For type=aws-ecr: AWS region of the ECR registry." }
       },
       "allOf": [
         {
@@ -227,6 +229,10 @@
         {
           "if": { "properties": { "type": { "const": "token" } }, "required": ["type"] },
           "then": { "required": ["token_secret"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "aws-ecr" } }, "required": ["type"] },
+          "then": { "required": ["role_arn", "region"] }
         }
       ]
     }

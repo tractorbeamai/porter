@@ -315,6 +315,13 @@ pub enum AuthConfig {
     },
     /// A single bearer token (e.g. a private npm registry), a secret name.
     Token { token_secret: String },
+    /// AWS ECR via GitHub Actions OIDC. Unlike the others, `role_arn`/`region`
+    /// are plain config values, not secret names: the release job's
+    /// `id-token: write` mints the token, `aws-actions/configure-aws-credentials`
+    /// assumes `role_arn`, and the login step runs `aws ecr get-login-password |
+    /// docker login` (plus `helm registry login` for chart rows). Valid only on
+    /// `oci`/`oci-helm` registries.
+    AwsEcr { role_arn: String, region: String },
 }
 
 /// How releases are signed.
@@ -548,6 +555,19 @@ impl Config {
                 );
             }
         }
+        // `aws-ecr` auth is an OCI-registry concern: ECR serves container images
+        // and OCI-packaged Helm charts, not npm/pypi.
+        for (name, registry) in &self.registries {
+            if matches!(registry.auth, AuthConfig::AwsEcr { .. })
+                && !matches!(registry.kind, RegistryKind::Oci | RegistryKind::OciHelm)
+            {
+                bail!(
+                    "registry {name:?} uses aws-ecr auth but its kind is {:?}; \
+                     aws-ecr is only valid for oci/oci-helm registries",
+                    registry.kind
+                );
+            }
+        }
         Ok(())
     }
 
@@ -736,6 +756,47 @@ mod tests {
         assert_eq!(reg.kind, RegistryKind::Oci);
         assert_eq!(reg.url, "docker.io/tractorbeam");
         assert!(matches!(reg.auth, AuthConfig::Basic { .. }));
+    }
+
+    #[test]
+    fn aws_ecr_auth_parses() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [registries.ecr]
+            kind = "oci"
+            url = "575108936009.dkr.ecr.us-east-1.amazonaws.com/tractorbeam"
+            auth = { type = "aws-ecr", role_arn = "arn:aws:iam::575108936009:role/gha", region = "us-east-1" }
+
+            [[group]]
+            name = "default"
+            components = [
+              { id = "api", type = "cargo-workspace", path = "Cargo.toml",
+                artifact = { kind = "oci-image", context = ".", dockerfile = "Dockerfile",
+                  registry = "ecr" } },
+            ]
+        "#})
+        .unwrap();
+        let reg = cfg.registry("ecr").unwrap();
+        assert!(matches!(
+            &reg.auth,
+            AuthConfig::AwsEcr { role_arn, region }
+                if role_arn == "arn:aws:iam::575108936009:role/gha" && region == "us-east-1"
+        ));
+    }
+
+    #[test]
+    fn aws_ecr_rejected_on_npm_registry() {
+        let body = indoc! {r#"
+            [registries.bad]
+            kind = "npm"
+            url = "https://registry.npmjs.org"
+            auth = { type = "aws-ecr", role_arn = "arn:aws:iam::1:role/x", region = "us-east-1" }
+
+            [[group]]
+            name = "default"
+            components = [ { id = "x", type = "cargo-workspace", path = "Cargo.toml" } ]
+        "#};
+        let err = Config::from_toml(body).unwrap_err().to_string();
+        assert!(err.contains("aws-ecr is only valid"), "{err}");
     }
 
     #[test]
