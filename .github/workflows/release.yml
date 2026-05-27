@@ -269,9 +269,30 @@ jobs:
         if: matrix.kind == 'oci-image'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      # Idempotent re-runs: if this version is already in the registry, skip the
+      # build & push below. Mandatory for IMMUTABLE registries (e.g. ECR), where
+      # re-pushing an existing tag hard-fails — so a re-run of a partially-failed
+      # release would break without this. The digest is captured either way so
+      # signing can still run against the already-published image (a prior run
+      # that pushed but failed to sign completes on re-run).
+      - name: Resolve image publish state
+        id: image_state
+        if: matrix.kind == 'oci-image'
+        env:
+          REF: ${{ matrix.registry }}:${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          if digest=$(docker buildx imagetools inspect "$REF" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "::notice::$REF already present at $digest; skipping build & push"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build & push image
         id: build_image
-        if: matrix.kind == 'oci-image'
+        if: matrix.kind == 'oci-image' && steps.image_state.outputs.published != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ matrix.context }}
@@ -286,7 +307,8 @@ jobs:
         env:
           TAG: ${{ matrix.tag }}
           REGISTRY: ${{ matrix.registry }}
-          DIGEST: ${{ steps.build_image.outputs.digest }}
+          # Built this run, or resolved from the already-published image.
+          DIGEST: ${{ steps.build_image.outputs.digest || steps.image_state.outputs.digest }}
           FULCIO_URL: ${{ matrix.fulcio_url }}
           REKOR_URL: ${{ matrix.rekor_url }}
         run: |
@@ -300,9 +322,33 @@ jobs:
             --predicate predicate.json --type slsaprovenance1 "$ref"
 
       # ----- helm-chart --------------------------------------------------
+      # Idempotent re-runs: skip package & push if this chart version is already
+      # in the registry (IMMUTABLE registries like ECR hard-fail on re-push).
+      # The pushed ref + digest are resolved so signing can still run against an
+      # already-published chart.
+      - name: Resolve chart publish state
+        id: chart_state
+        if: matrix.kind == 'helm-chart'
+        env:
+          VERSION: ${{ matrix.version }}
+          CHART: ${{ matrix.chart }}
+          REGISTRY: ${{ matrix.registry }}
+        run: |
+          set -euo pipefail
+          # helm pushes to <registry>/<chart name>; the name is in Chart.yaml.
+          name=$(helm show chart "$CHART" | awk '/^name:/ {print $2; exit}')
+          repo="${REGISTRY#oci://}/${name}"
+          if digest=$(docker buildx imagetools inspect "${repo}:${VERSION}" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "ref=${repo}@${digest}" >> "$GITHUB_OUTPUT"
+            echo "::notice::chart ${name} ${VERSION} already present; skipping package & push"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Package & push Helm chart
         id: push_chart
-        if: matrix.kind == 'helm-chart'
+        if: matrix.kind == 'helm-chart' && steps.chart_state.outputs.published != 'true'
         env:
           VERSION: ${{ matrix.version }}
           CHART: ${{ matrix.chart }}
@@ -340,7 +386,8 @@ jobs:
         if: matrix.kind == 'helm-chart' && matrix.sign == 'true'
         env:
           TAG: ${{ matrix.tag }}
-          REF: ${{ steps.push_chart.outputs.ref }}
+          # Pushed this run, or resolved from the already-published chart.
+          REF: ${{ steps.push_chart.outputs.ref || steps.chart_state.outputs.ref }}
           FULCIO_URL: ${{ matrix.fulcio_url }}
           REKOR_URL: ${{ matrix.rekor_url }}
         run: |
