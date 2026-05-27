@@ -24,6 +24,7 @@ approval_rules:
   - name: one approval
     requires:
       count: 1
+      organizations: ["tractorbeamai"]
     options:
       invalidate_on_push: true
       ignore_update_merges: true
