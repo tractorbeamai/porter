@@ -28,6 +28,15 @@ on:
         required: false
         type: string
         default: ""
+      build-from-source:
+        description: |
+          Build the porter CLI from the checked-out source instead of
+          installing a released binary. porter sets this on its own repo so a
+          push that changes porter's config format is processed by the porter
+          it ships, not the previously-released one. Consumers leave it false.
+        required: false
+        type: boolean
+        default: false
     secrets:
       app-id:
         description: |
@@ -63,7 +72,17 @@ jobs:
           # scoped to a single `git push` invocation.
           persist-credentials: false
 
+      # Released binary for consumers; source build for porter's own repo (the
+      # released CLI can't parse a push that changes porter's own config —
+      # same bootstrap as porter-release.yml).
+      - name: Build porter from source
+        if: inputs.build-from-source
+        run: |
+          cargo build --bin porter --locked
+          echo "$PWD/target/debug" >> "$GITHUB_PATH"
+
       - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
+        if: ${{ !inputs.build-from-source }}
         with:
           version: ${{ inputs.porter-version }}
 

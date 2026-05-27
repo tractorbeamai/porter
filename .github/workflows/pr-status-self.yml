@@ -1,7 +1,9 @@
 name: pr-status-self
 
 # porter dogfoods its own pr-status reusable workflow on every PR
-# against main. Comment is informational and non-blocking; see
+# against main. `build-from-source: true` makes it run the porter the PR
+# ships (the released CLI can't parse a PR that changes porter's own
+# config/output). Comment is informational and non-blocking; see
 # `pr-status.yml` for the body shape.
 
 on:
@@ -19,3 +21,5 @@ concurrency:
 jobs:
   status:
     uses: ./.github/workflows/pr-status.yml
+    with:
+      build-from-source: true

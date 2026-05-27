@@ -35,7 +35,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
+      # Build porter from source rather than installing the released CLI: the
+      # commit that just landed may change porter's own config format, which a
+      # prior release can't parse. Same bootstrap as porter-release.yml.
+      - name: Build porter from source
+        run: |
+          cargo build --bin porter --locked
+          echo "$PWD/target/debug" >> "$GITHUB_PATH"
 
       - id: tag
         run: |
