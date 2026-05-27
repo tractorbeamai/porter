@@ -182,11 +182,17 @@ components = [
 
 **Workflow steps** (`if: matrix.kind == 'helm-chart'`):
 1. Registry login (see [Registries](#registries)).
-2. `helm package <chart> --version <version> --app-version <same> -d dist`
+2. Resolve dependencies: a chart with a committed `Chart.lock` runs
+   `helm dependency build` (reproducible from the lock); a chart that
+   declares `dependencies:` without a lock runs `helm dependency update`
+   (resolve + fetch); a dependency-free chart skips this. `helm package`
+   won't fetch subcharts itself, so charts with remote dependencies fail
+   to package unless they're vendored under `charts/` first.
+3. `helm package <chart> --version <version> --app-version <same> -d dist`
    (the matrix `version` is already the bare `X.Y.Z` helm expects).
-3. `helm push dist/<chart>-<version>.tgz <registry>` — the pushed ref
+4. `helm push dist/<chart>-<version>.tgz <registry>` — the pushed ref
    and digest are parsed from helm's output.
-4. When signing is enabled: `cosign sign` + `cosign attest --type
+5. When signing is enabled: `cosign sign` + `cosign attest --type
    slsaprovenance1` against the pushed `<repo>@<digest>` (a chart in an
    OCI registry is just another OCI artifact). See [Signing](#signing).
 
