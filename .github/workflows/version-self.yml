@@ -31,6 +31,10 @@ concurrency:
 jobs:
   rolling-pr:
     uses: ./.github/workflows/version.yml
+    with:
+      # Run the porter the change ships, not the released CLI — porter's own
+      # config format can change in the very push this processes.
+      build-from-source: true
     secrets:
       app-id: ${{ secrets.PORTER_APP_ID }}
       app-private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}

@@ -35,17 +35,38 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
+      # Build porter from source rather than installing the released CLI: the
+      # commit that just landed may change porter's own config format, which a
+      # prior release can't parse. Same bootstrap as porter-release.yml.
+      - name: Build porter from source
+        run: |
+          cargo build --bin porter --locked
+          echo "$PWD/target/debug" >> "$GITHUB_PATH"
 
       - id: tag
         run: |
           set -euo pipefail
-          tag=$(porter release tag)
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if git ls-remote --tags origin "refs/tags/${tag}" | grep -q "refs/tags/${tag}$"; then
-            echo "${tag} already exists on origin; nothing to do"
+          # `porter release tag` prints one tag per published component across
+          # every group (one line each). Push only the ones the remote doesn't
+          # already have, so unchanged groups are no-ops.
+          pending=""
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            if git ls-remote --tags origin "refs/tags/${tag}" | grep -q "refs/tags/${tag}$"; then
+              echo "${tag} already exists on origin; skipping"
+            else
+              pending+="${tag}"$'\n'
+            fi
+          done < <(porter release tag)
+          if [[ -z "$pending" ]]; then
+            echo "no new tags to push"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
+          {
+            echo "tags<<__PORTER_EOF__"
+            printf '%s' "$pending"
+            echo "__PORTER_EOF__"
+          } >> "$GITHUB_OUTPUT"
 
       # credential: app-token — the vX.Y.Z tag is ruleset-protected (only the
       # porter App may write v*) and its push must trigger porter-release.yml,
@@ -58,19 +79,25 @@ jobs:
           private-key: ${{ secrets.PORTER_APP_PRIVATE_KEY }}
           permission-contents: write
 
-      - name: Push tag
+      - name: Push tags
         if: steps.tag.outputs.skip != 'true'
         env:
           # The App token is masked, but route it through env anyway
           # to keep `${{ ... }}` out of the run block.
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAGS: ${{ steps.tag.outputs.tags }}
         run: |
           set -euo pipefail
           git config user.name "porter[bot]"
           git config user.email "porter[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$TAG"
-          # Scope the credential to a single push via explicit auth
-          # URL — the checkout step set `persist-credentials: false`
-          # specifically so this token isn't written into git config.
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$TAG"
+          # Create every pending tag, then push exactly those refs in one shot.
+          # Scope the credential to a single push via explicit auth URL — the
+          # checkout step set `persist-credentials: false` so this token isn't
+          # written into git config.
+          refs=()
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            git tag -a "$tag" -m "$tag"
+            refs+=("refs/tags/$tag")
+          done <<< "$TAGS"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${refs[@]}"

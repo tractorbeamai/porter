@@ -2,19 +2,22 @@ name: porter / release
 
 # Reusable workflow for consumer repos. The flow:
 #
-#   1. tag         — push the `vX.Y.Z` tag (porter App identity).
+#   1. tag         — push every pending component tag (porter App identity)
+#                    and open a GitHub Release per tag.
 #   2. plan        — `porter matrix` emits a job matrix from porter.toml.
-#   3. build (×N)  — fan out across artifact rows.
-#   4. publish     — collect everything into the GitHub Release.
+#   3. build (×N)  — fan out across artifact rows; each publishes under its
+#                    own component tag/version and logs in to its own registry.
+#   4. publish     — merge per-row checksums into each release.
 #
-# A row is signed when `porter matrix` sets `sign=true` on it (driven by
-# the repo's `[signing]` config). The cosign steps below, gated on
-# `matrix.sign`, then sign and attach SLSA provenance — by registry
-# digest for images/charts, as detached bundles for binaries.
+# porter cuts one tag per published component (`<id>/v<version>`, or a custom
+# `tag_prefix`), so a release may carry several tags at independent versions —
+# every matrix row carries its own `tag`, `version`, `registry`, and registry
+# auth. A row is signed when `porter matrix` sets `sign=true` on it.
 #
-# Credential policy: see README "Privileged tagger". In short: an App token
-# minted in-job from `app-id`/`app-private-key` writes the protected `vX.Y.Z`
-# tag; GITHUB_TOKEN handles release uploads, registry login, and OIDC signing.
+# Credential policy: see README "Privileged tagger". An App token minted in-job
+# writes the protected tags; GITHUB_TOKEN handles release uploads and OIDC
+# signing. Registries with `basic`/`token` auth read their credentials from the
+# `registry-auth` JSON secret (Actions can't index `secrets` by a dynamic key).
 
 on:
   workflow_call:
@@ -28,7 +31,7 @@ on:
       app-id:
         description: |
           porter App ID. The workflow mints an installation token from this
-          and `app-private-key` to push the release tag — the repo ruleset
+          and `app-private-key` to push the release tags — the repo ruleset
           rejects a tag push from any other identity.
         required: true
       app-private-key:
@@ -36,9 +39,16 @@ on:
         required: true
       npm-token:
         description: |
-          NPM auth token used by the `npm-package` artifact kind.
-          Required only if porter.toml declares a `[[artifacts]]`
-          entry of `kind = "npm-package"`.
+          Fallback npm auth token, used by an `npm-package` artifact whose
+          registry declares no auth (the default `registry.npmjs.org`).
+          Registries with explicit `token` auth use `registry-auth` instead.
+        required: false
+      registry-auth:
+        description: |
+          JSON object mapping secret name → value, e.g.
+          `{"DH_USER":"...","DH_PAT":"..."}`. Each `[registries.*]` entry with
+          `basic`/`token` auth names the keys it needs here. Required only if
+          a referenced registry uses basic/token auth.
         required: false
 
 permissions:
@@ -50,27 +60,21 @@ jobs:
     permissions:
       contents: write
     outputs:
-      tag: ${{ steps.cut.outputs.tag }}
+      tags: ${{ steps.matrix.outputs.tags }}
       matrix: ${{ steps.matrix.outputs.matrix }}
       has-artifacts: ${{ steps.matrix.outputs.has-artifacts }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
-          # Don't persist the App token in git config; the tag push
-          # below uses an explicit auth URL so the credential is
-          # scoped to a single `git push` invocation.
           persist-credentials: false
 
       - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
         with:
           version: ${{ inputs.porter-version }}
 
-      # credential: app-token — minted in this job (not passed across jobs,
-      # which would have it revoked before use) and used by the steps below
-      # to push the protected vX.Y.Z tag and author the release as porter[bot].
-      # Uses create-github-app-token directly rather than porter's composite,
-      # since this workflow runs in the consumer's checkout, not porter's.
+      # credential: app-token — minted in this job and used below to push the
+      # protected tags and author the Releases as porter[bot].
       - name: Mint app token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
@@ -79,23 +83,29 @@ jobs:
           private-key: ${{ secrets.app-private-key }}
           permission-contents: write
 
-      # credential: app-token — pushes the protected vX.Y.Z tag; the ruleset
-      # rejects a tag push from any other identity.
+      # credential: app-token — pushes the protected component tags; the ruleset
+      # rejects a tag push from any other identity. Idempotent: skips tags the
+      # remote already has.
       - id: cut
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          tag=$(porter release tag)
-          if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
-            echo "tag $tag already exists; skipping tag push"
-          else
-            git config user.name "porter[bot]"
-            git config user.email "porter[bot]@users.noreply.github.com"
-            git tag -a "$tag" -m "Release $tag"
-            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$tag"
+          git config user.name "porter[bot]"
+          git config user.email "porter[bot]@users.noreply.github.com"
+          refs=()
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+              echo "tag $tag already exists; skipping"
+            else
+              git tag -a "$tag" -m "Release $tag"
+              refs+=("refs/tags/$tag")
+            fi
+          done < <(porter release tag)
+          if [[ ${#refs[@]} -gt 0 ]]; then
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${refs[@]}"
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - id: matrix
         run: |
@@ -108,24 +118,36 @@ jobs:
           else
             echo "has-artifacts=false" >> "$GITHUB_OUTPUT"
           fi
+          # The unique tags this release cuts, for the publish job.
+          tags=$(echo "$matrix" | jq -r '.include[].tag' | sort -u)
+          {
+            echo "tags<<__PORTER_EOF__"
+            echo "$tags"
+            echo "__PORTER_EOF__"
+          } >> "$GITHUB_OUTPUT"
 
-      # credential: app-token — deliberate exception to "API calls → github.token".
-      # The tag already exists, so `gh release create` is an API call that
-      # github.token could make; we use the App token so the release is authored
-      # by porter[bot] (provenance), and the token is already in this job.
-      - name: Create GitHub Release
+      # credential: app-token — deliberate exception to "API calls → github.token":
+      # we author the Releases as porter[bot] for provenance. One Release per
+      # tag, with notes from that tag's group's changelog.
+      - name: Create GitHub Releases
+        if: steps.matrix.outputs.has-artifacts == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          TAG: ${{ steps.cut.outputs.tag }}
+          MATRIX: ${{ steps.matrix.outputs.matrix }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG already exists"
-          else
-            notes_file=$(mktemp)
-            porter release notes > "$notes_file" || true
-            gh release create "$TAG" --title "$TAG" --notes-file "$notes_file"
-          fi
+          # Unique (tag, group) pairs — one Release each.
+          echo "$MATRIX" | jq -rc '.include[] | {tag, group}' | sort -u | while read -r row; do
+            tag=$(jq -r '.tag' <<< "$row")
+            group=$(jq -r '.group' <<< "$row")
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "release $tag already exists"
+            else
+              notes_file=$(mktemp)
+              porter release notes --group "$group" > "$notes_file" || true
+              gh release create "$tag" --title "$tag" --notes-file "$notes_file"
+            fi
+          done
 
   build:
     needs: tag
@@ -141,35 +163,52 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: ${{ needs.tag.outputs.tag }}
+          ref: ${{ matrix.tag }}
           persist-credentials: false
 
       - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
         with:
           version: ${{ inputs.porter-version }}
 
-      # ----- signing prerequisites ---------------------------------------
-      # cosign (keyless, via the job's id-token) is installed on every
-      # signable row; `matrix.sign` is set by `porter matrix` when
-      # `[signing]` is enabled in porter.toml.
       - name: Install cosign
         if: matrix.sign == 'true'
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
-      # oci-image and helm-chart push to (and sign into) an OCI registry,
-      # so they need registry auth. GHCR is logged in automatically with
-      # the workflow token. Other registries (ECR, Docker Hub, …) need
-      # credentials this reusable workflow can't supply generically — see
-      # docs/artifact-kinds.md for how to wire them.
-      # credential: github.token — registry auth, not a git ref write; the
-      # auto-scoped token (packages: write above) is the right tool.
-      - name: Log in to GHCR
-        if: (matrix.kind == 'oci-image' || matrix.kind == 'helm-chart') && contains(matrix.registry, 'ghcr.io')
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
+      # ----- registry login (OCI: oci-image + helm-chart) ----------------
+      # helm push to an OCI registry reads the same ~/.docker/config.json that
+      # `docker login` writes, so one step covers both kinds. Credentials come
+      # from GITHUB_TOKEN (github-token auth) or the `registry-auth` JSON
+      # secret (basic auth), keyed by the secret names porter put on the row.
+      - name: Registry login
+        if: (matrix.kind == 'oci-image' || matrix.kind == 'helm-chart') && matrix.auth_kind != 'none'
+        env:
+          AUTH_KIND: ${{ matrix.auth_kind }}
+          REGISTRY: ${{ matrix.registry }}
+          ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REGISTRY_AUTH: ${{ secrets.registry-auth }}
+          USERNAME_SECRET: ${{ matrix.username_secret }}
+          PASSWORD_SECRET: ${{ matrix.password_secret }}
+        run: |
+          set -euo pipefail
+          # Registry host = up to the first '/', after stripping any oci:// prefix.
+          host="${REGISTRY#oci://}"; host="${host%%/*}"
+          case "$AUTH_KIND" in
+            github-token)
+              user="$ACTOR"; pass="$GITHUB_TOKEN" ;;
+            basic)
+              user=$(jq -r --arg k "$USERNAME_SECRET" '.[$k] // empty' <<< "$REGISTRY_AUTH")
+              pass=$(jq -r --arg k "$PASSWORD_SECRET" '.[$k] // empty' <<< "$REGISTRY_AUTH")
+              ;;
+            *)
+              echo "::error::OCI registry auth_kind '$AUTH_KIND' is unsupported (use github-token or basic)" >&2
+              exit 1 ;;
+          esac
+          if [[ -z "$pass" ]]; then
+            echo "::error::no credential resolved for $host (check the registry-auth secret)" >&2
+            exit 1
+          fi
+          echo "$pass" | docker login "$host" -u "$user" --password-stdin
 
       # ----- cli-binary --------------------------------------------------
       - name: Add Rust target
@@ -185,34 +224,26 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: porter build cli-binary --name "$NAME" --target "$TARGET"
 
-      # credential: github.token — uploads to the already-created release; an
-      # API call, not a ref write.
+      # credential: github.token — uploads to the component's release; an API
+      # call, not a ref write.
       - name: Upload cli-binary tarball
         if: matrix.kind == 'cli-binary'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.tag.outputs.tag }}
+          TAG: ${{ matrix.tag }}
           NAME: ${{ matrix.name }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           gh release upload "$TAG" --clobber "dist/${NAME}-${TARGET}.tar.gz"
-          # Per-row checksum file; the publish job merges them later.
+          # Per-row checksum file; the publish job merges them per release.
           gh release upload "$TAG" --clobber "dist/checksums.txt#checksums-${NAME}-${TARGET}.txt"
 
-      # Sign the tarball and attach SLSA provenance, both keyless via the
-      # job's OIDC token. Two detached bundles land on the Release:
-      # `.sig.bundle` (a signature `cosign verify-blob` checks) and
-      # `.att.bundle` (the provenance `cosign verify-attestation` checks).
-      # cosign builds the in-toto statement from the predicate porter
-      # emits, setting the subject to the tarball's own digest.
-      # credential: github.token — cosign signs keyless via OIDC (id-token:
-      # write above); the token here only uploads the bundles to the release.
       - name: Sign + attest cli-binary
         if: matrix.kind == 'cli-binary' && matrix.sign == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.tag.outputs.tag }}
+          TAG: ${{ matrix.tag }}
           NAME: ${{ matrix.name }}
           TARGET: ${{ matrix.target }}
           FULCIO_URL: ${{ matrix.fulcio_url }}
@@ -225,8 +256,7 @@ jobs:
           cosign sign-blob --yes \
             --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" \
             --bundle "$sig" "$art"
-          # Pin the source ref to the release tag: the build job runs in
-          # the caller's context, where GITHUB_REF is the branch.
+          # Pin the source ref to this component's tag.
           porter attest --emit predicate --source-ref "refs/tags/${TAG}" > predicate.json
           cosign attest-blob --yes \
             --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" \
@@ -248,16 +278,13 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           platforms: ${{ matrix.platforms }}
-          tags: ${{ matrix.registry }}:${{ needs.tag.outputs.tag }}
+          tags: ${{ matrix.registry }}:${{ matrix.version }}
           provenance: false  # porter issues its own SLSA attestation below
 
-      # Sign the pushed image and attach SLSA provenance by digest (never
-      # by tag — the digest is the immutable thing the admission policy
-      # gates on). cosign stores both in the registry next to the image.
       - name: Sign + attest image
         if: matrix.kind == 'oci-image' && matrix.sign == 'true'
         env:
-          TAG: ${{ needs.tag.outputs.tag }}
+          TAG: ${{ matrix.tag }}
           REGISTRY: ${{ matrix.registry }}
           DIGEST: ${{ steps.build_image.outputs.digest }}
           FULCIO_URL: ${{ matrix.fulcio_url }}
@@ -267,8 +294,6 @@ jobs:
           ref="${REGISTRY}@${DIGEST}"
           cosign sign --yes \
             --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" "$ref"
-          # Pin the source ref to the release tag: the build job runs in
-          # the caller's context, where GITHUB_REF is the branch.
           porter attest --emit predicate --source-ref "refs/tags/${TAG}" > predicate.json
           cosign attest --yes \
             --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" \
@@ -279,41 +304,30 @@ jobs:
         id: push_chart
         if: matrix.kind == 'helm-chart'
         env:
-          TAG: ${{ needs.tag.outputs.tag }}
+          VERSION: ${{ matrix.version }}
           CHART: ${{ matrix.chart }}
           REGISTRY: ${{ matrix.registry }}
         run: |
           set -euo pipefail
-          # Strip the `v` prefix so `helm package --version` accepts it.
-          version="${TAG#v}"
-          helm package "$CHART" --version "$version" --app-version "$version" -d dist
-          # Glob into an array to avoid the `ls | head -1` antipattern;
-          # `helm package` writes exactly one .tgz per invocation.
+          helm package "$CHART" --version "$VERSION" --app-version "$VERSION" -d dist
           shopt -s nullglob
           pkgs=(dist/*.tgz)
           if [[ ${#pkgs[@]} -eq 0 ]]; then
             echo "::error::helm package produced no .tgz in dist/" >&2
             exit 1
           fi
-          # Capture helm push output to recover the pushed ref + digest so
-          # the signing step can sign by digest. helm writes both to
-          # stderr as `Pushed: <ref>` / `Digest: sha256:<hex>`.
           out=$(helm push "${pkgs[0]}" "$REGISTRY" 2>&1)
           echo "$out"
           digest=$(printf '%s\n' "$out" | sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p')
           pushed=$(printf '%s\n' "$out" | sed -n 's/^Pushed: \(.*\)$/\1/p')
           if [[ -n "$digest" && -n "$pushed" ]]; then
-            # Drop the `:tag` suffix and pin to the digest.
             echo "ref=${pushed%:*}@${digest}" >> "$GITHUB_OUTPUT"
           fi
 
-      # Sign the pushed chart and attach SLSA provenance by digest, the
-      # same way oci-image is handled (a Helm chart in an OCI registry is
-      # just another OCI artifact).
       - name: Sign + attest Helm chart
         if: matrix.kind == 'helm-chart' && matrix.sign == 'true'
         env:
-          TAG: ${{ needs.tag.outputs.tag }}
+          TAG: ${{ matrix.tag }}
           REF: ${{ steps.push_chart.outputs.ref }}
           FULCIO_URL: ${{ matrix.fulcio_url }}
           REKOR_URL: ${{ matrix.rekor_url }}
@@ -325,38 +339,50 @@ jobs:
           fi
           cosign sign --yes \
             --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" "$REF"
-          # Pin the source ref to the release tag: the build job runs in
-          # the caller's context, where GITHUB_REF is the branch.
           porter attest --emit predicate --source-ref "refs/tags/${TAG}" > predicate.json
           cosign attest --yes \
             --fulcio-url "$FULCIO_URL" --rekor-url "$REKOR_URL" \
             --predicate predicate.json --type slsaprovenance1 "$REF"
 
       # ----- npm-package -------------------------------------------------
+      # Token auth: `token` rows read their token from the registry-auth JSON
+      # secret; a default-registry row with no declared auth falls back to the
+      # `npm-token` secret.
       - name: Publish npm package
         if: matrix.kind == 'npm-package'
         env:
-          NPM_TOKEN: ${{ secrets.npm-token }}
+          AUTH_KIND: ${{ matrix.auth_kind }}
+          TOKEN_SECRET: ${{ matrix.token_secret }}
+          REGISTRY_AUTH: ${{ secrets.registry-auth }}
+          NPM_TOKEN_FALLBACK: ${{ secrets.npm-token }}
           REGISTRY: ${{ matrix.registry }}
         working-directory: ${{ matrix.path }}
         run: |
           set -euo pipefail
-          if [[ -z "$NPM_TOKEN" ]]; then
-            echo "::error::NPM_TOKEN secret not set; pass it via the calling workflow's secrets" >&2
+          if [[ "$AUTH_KIND" == "token" ]]; then
+            token=$(jq -r --arg k "$TOKEN_SECRET" '.[$k] // empty' <<< "$REGISTRY_AUTH")
+          else
+            token="$NPM_TOKEN_FALLBACK"
+          fi
+          if [[ -z "$token" ]]; then
+            echo "::error::no npm token (set the registry's token secret in registry-auth, or pass npm-token)" >&2
             exit 1
           fi
-          echo "//${REGISTRY#https://}/:_authToken=$NPM_TOKEN" > .npmrc
+          echo "//${REGISTRY#https://}/:_authToken=$token" > .npmrc
           npm publish --access public
 
       # ----- python-wheel ------------------------------------------------
-      - name: Build & publish Python wheel
+      - name: Build & upload Python wheel
         if: matrix.kind == 'python-wheel'
         env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ matrix.tag }}
           WHEEL_PATH: ${{ matrix.path }}
         run: |
           set -euo pipefail
           pipx install maturin
           (cd "$WHEEL_PATH" && maturin build --release --out ../dist)
+          gh release upload "$TAG" --clobber dist/*.whl
 
   publish:
     needs: [tag, build]
@@ -367,31 +393,29 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: ${{ needs.tag.outputs.tag }}
           persist-credentials: false
 
       # credential: github.token — downloads/re-uploads release assets; API
       # calls, not ref writes.
-      - name: Merge per-row checksums
+      - name: Merge per-row checksums into each release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.tag.outputs.tag }}
+          TAGS: ${{ needs.tag.outputs.tags }}
         run: |
           set -euo pipefail
-          mkdir -p dist
-          # Pull every per-row checksums-<id>.txt asset from the release,
-          # concatenate, and re-upload as the canonical checksums.txt the
-          # setup-porter action verifies against. Trust model: only the
-          # porter App can upload to the release (enforced by the repo
-          # ruleset), so any `checksums-*.txt` here is App-authored. If
-          # a future change opens uploads to other identities, this merge
-          # needs filtering by the matrix row IDs we expect.
-          if gh release view "$TAG" --json assets --jq '.assets[].name' \
-              | grep -q '^checksums-'; then
-            for asset in $(gh release view "$TAG" --json assets \
-                --jq '.assets[].name' | grep '^checksums-'); do
-              gh release download "$TAG" --pattern "$asset" --dir dist --clobber
+          # For each release this run cut, pull its per-row checksums-<id>.txt
+          # assets, concatenate, and re-upload the canonical checksums.txt the
+          # setup-porter action verifies against. Trust model: only the porter
+          # App can upload to a release (repo ruleset), so any checksums-* here
+          # is App-authored.
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            names=$(gh release view "$tag" --json assets --jq '.assets[].name' | grep '^checksums-' || true)
+            [[ -z "$names" ]] && continue
+            workdir=$(mktemp -d)
+            for asset in $names; do
+              gh release download "$tag" --pattern "$asset" --dir "$workdir" --clobber
             done
-            cat dist/checksums-*.txt | sort -u > dist/checksums.txt
-            gh release upload "$TAG" --clobber dist/checksums.txt
-          fi
+            cat "$workdir"/checksums-*.txt | sort -u > "$workdir/checksums.txt"
+            gh release upload "$tag" --clobber "$workdir/checksums.txt"
+          done <<< "$TAGS"

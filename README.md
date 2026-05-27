@@ -55,7 +55,7 @@ options if you need supply-chain immutability.
 - **[Configuration](#configuration)** — `porter.toml` reference.
 - **[Runbooks](docs/runbooks.md)** — recovery procedures for the
   failure modes that actually happen.
-- **[Artifact kinds](docs/artifact-kinds.md)** — every `[[artifacts]]`
+- **[Artifact kinds](docs/artifact-kinds.md)** — every `artifact`
   kind, what it expects, and what's implemented today.
 - **[JSON schemas](docs/json-schemas.md)** — exact shapes of
   `porter status --json` and `porter matrix --compact`.
@@ -88,28 +88,29 @@ Inspect what the next release would be:
 
 ```console
 $ porter status
-1 changeset, bump=minor
-0.5.2 -> 0.5.3
+default: 0.5.2 -> 0.5.3 (minor)
+  minor  .changeset/add-the-attest-subcommand.md  Add the attest subcommand.
 ```
 
-Apply it. Every `[[versioned_files]]` entry rewrites in lockstep, the
-changesets are consumed, and `CHANGELOG.md` gets the new section
+Apply it. Each bumped group rewrites its version sources in lockstep, the
+changesets are consumed, and the group's changelog gets the new section
 prepended:
 
 ```console
 $ porter version
-bumped 0.5.2 -> 0.5.3 (minor)
-rewrote 3 file(s):
+bumped default: 0.5.2 -> 0.5.3 (minor)
   Cargo.toml
   deploy/chart/Chart.yaml
   ts/packages/sdk/package.json
-wrote CHANGELOG.md and removed 1 changeset file(s)
+  tags: mytool/v0.5.3
+consumed 1 changeset file(s)
 ```
 
-Drift detection is exactly the bug porter exists to prevent — if two
-files disagree on the current version, `porter version` refuses to
-proceed and tells you which files disagree. Bring them back into
-agreement (usually by hand-editing the lagging one) and rerun.
+Drift detection is exactly the bug porter exists to prevent — if two version
+sources *within a group* disagree on the current version, `porter version`
+refuses to proceed and tells you which files disagree. (Different groups
+holding different versions is expected — that's the point of groups.) Bring a
+group's files back into agreement and rerun.
 
 `status --json` and `matrix --compact` emit machine-readable shapes;
 see [`docs/json-schemas.md`](docs/json-schemas.md).
@@ -130,8 +131,8 @@ Built-in adapters:
   named capture group `(?P<version>...)`; the matched substring is
   replaced. A leading `v` in the captured value is preserved.
 
-Stack as many `[[versioned_files]]` blocks as you need. They all move
-together or not at all.
+A version source attaches to a component via its `type`/`path`; every
+version-bearing component in a group moves together or not at all.
 
 ### Releases
 
@@ -157,18 +158,19 @@ see [getting started](docs/getting-started.md) for the exact YAML.
 
 ### Artifacts
 
-Declare what each release builds in `porter.toml`:
+A component's `artifact` says what it builds and publishes:
 
 ```toml
-[[artifacts]]
-kind = "cli-binary"
-name = "mytool"
-package = "mytool-cli"
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
+[[group]]
+name = "default"
+components = [
+  { id = "mytool", type = "cargo-workspace", path = "Cargo.toml", tag_prefix = "v",
+    artifact = { kind = "cli-binary", package = "mytool-cli", targets = [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+    ] } },
 ]
 ```
 
@@ -273,48 +275,55 @@ refactor PR is fine. The comment is informational.
 
 ## Configuration
 
-Create a `porter.toml` at the repo root:
+A `porter.toml` declares one or more **groups**. A group is a release line:
+its components share one version, move together, and cut their own tags. A
+**component** bundles a *version source* (the file whose version string is
+rewritten) and an optional *artifact* (what's built and published); it may be
+either or both. Components in different groups version independently.
 
 ```toml
 [changesets]
 directory = ".changeset"
 
-[[versioned_files]]
-type = "cargo-workspace"
-path = "Cargo.toml"
-
-[[versioned_files]]
-type = "helm-chart"
-path = "deploy/helm/platform/Chart.yaml"
-
-[[versioned_files]]
-type = "package-json"
-path = "ts/packages/sdk/package.json"
-
-[[versioned_files]]
-type = "regex"
-path = "deploy/main.tf"
-pattern = 'platform_chart_revision\s*=\s*"(?P<version>v[0-9.]+)"'
-
-[[artifacts]]
-kind = "cli-binary"
-name = "mytool"
-package = "mytool-cli"
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
+# The application: Rust workspace + its container image, one version line.
+[[group]]
+name = "app"
+components = [
+  { id = "app", type = "cargo-workspace", path = "Cargo.toml",
+    artifact = { kind = "cli-binary", package = "app-cli" } },
+  { id = "api", artifact = { kind = "oci-image", context = ".",
+    dockerfile = "Dockerfile", registry = "ghcr" } },
 ]
 
+# The SDK ships for two languages in lockstep on its own line.
+[[group]]
+name = "sdk"
+changelog = "sdk/CHANGELOG.md"
+components = [
+  { id = "py-sdk", type = "regex", path = "py/pyproject.toml",
+    pattern = '(?m)^version = "(?P<version>[^"]+)"',
+    artifact = { kind = "python-wheel", path = "py" } },
+  { id = "ts-sdk", type = "package-json", path = "ts/packages/sdk/package.json",
+    artifact = { kind = "npm-package", path = "ts/packages/sdk" } },
+]
+
+# Named registries an artifact's `registry` field references by name. A bare
+# URL also works (anonymous, no auth).
+[registries.ghcr]
+kind = "oci"
+url  = "ghcr.io/acme"
+auth = { type = "github-token" }
+
 [release]
-tag_prefix = "v"
-changelog = "CHANGELOG.md"
-# Title for the rolling Version PR (and its commit). {version} and {tag}
-# are substituted; set it to a Conventional Commits subject if your repo
-# squash-merges and wants a conventional history on the default branch.
-version_pr_title = "Version Packages: {version}"   # e.g. "chore(release): {version}"
+changelog = "CHANGELOG.md"   # default for groups without their own
+version_pr_title = "Version Packages: {version}"   # {version} filled when one group bumps
 ```
+
+A changeset names the group(s) it bumps (`porter add --group sdk`); each group
+computes its own next version, writes its own changelog, and cuts one tag per
+published component (`py-sdk/v0.4.1`, `ts-sdk/v0.4.1`, …). Set a component's
+`tag_prefix` to override the default `<id>/v` stem (e.g. `"v"` for bare
+`vX.Y.Z` in a single-group repo).
 
 The full schema lives at [`schemas/porter.toml.json`](schemas/porter.toml.json);
 your editor's TOML LSP will pick it up if pointed at that file.
@@ -349,10 +358,10 @@ PRs that need to be marked as part of the next release), author a
 | ----------------- | ------------------------------------------------------------------ |
 | `add`             | Author a `.changeset/*.md` file (interactive or via flags).        |
 | `status`          | Print pending changesets, current version, and the computed next.  |
-| `version`         | Apply pending changesets: bump every `versioned_files` entry, prepend `CHANGELOG.md`, and consume the changeset files. |
-| `release tag`     | Print the tag of the next release (`<tag_prefix><current>`).       |
-| `release notes`   | Print the body of the most recent changelog section.               |
-| `matrix`          | Emit a GitHub Actions matrix derived from `[[artifacts]]`.         |
+| `version`         | Apply pending changesets: bump each group's version sources, prepend its changelog, and consume the changeset files. |
+| `release tag`     | Print every published component's tag, one per line.               |
+| `release notes`   | Print the body of the most recent changelog section (`--group` for a group's changelog). |
+| `matrix`          | Emit a GitHub Actions matrix of every group's artifacts.           |
 | `build cli-binary`| Cross-compile a CLI binary, archive it, and write a checksum line. |
 | `attest`          | Emit unsigned SLSA provenance for an artifact — a complete in-toto v1 Statement (`--emit statement`, default) or just the predicate for `cosign attest` to sign (`--emit predicate`). |
 

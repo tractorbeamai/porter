@@ -14,12 +14,12 @@ support for the version-bumping loop:
 
 - `porter add` writes a changeset.
 - `porter status` reports current/next.
-- `porter version` rewrites every `[[versioned_files]]` entry,
-  prepends the changelog, consumes the changesets.
+- `porter version` rewrites each bumped group's version sources,
+  prepends its changelog, consumes the changesets.
 - `porter release tag` / `porter release notes` query the rendered
   changelog.
 
-Versioned-file kinds: `cargo-workspace`, `helm-chart`, `package-json`,
+Version-source kinds: `cargo-workspace`, `helm-chart`, `package-json`,
 generic `regex`. All four are unit-tested against the obvious failure
 modes (drift detection, missing fields, formatting preservation).
 
@@ -29,8 +29,8 @@ modes (drift detection, missing fields, formatting preservation).
 workflow-step skeletons).
 
 The release pipeline: `porter matrix` emits a GitHub Actions job
-matrix from `[[artifacts]]`; the reusable `release.yml` consumes it
-and dispatches per-kind step blocks. `porter build cli-binary`
+matrix from each group's artifact-bearing components; the reusable
+`release.yml` consumes it and dispatches per-kind step blocks. `porter build cli-binary`
 cross-compiles, archives, and writes a BSD-format SHA-256 line into
 `dist/checksums.txt`.
 
@@ -125,11 +125,19 @@ deployments based on them.
 - **Crates.io publishing.** Same as above — `cargo publish` can be a
   consumer-side step that runs after the release tag is created.
 - **Mirror replication.** No "publish to multiple registries"
-  fan-out; `[[artifacts]]` is one entry per published artifact.
+  fan-out; each component publishes one artifact to one registry.
 - **Pre-releases / alphas / betas.** porter computes one canonical
-  next version. Pre-release identifiers (`-alpha.1`, `-rc.2`) aren't
-  modeled.
-- **Multi-tenant releases.** porter is single-mode (`changesets.mode
-  = "single"`): everything moves at one version. Independent-mode
-  (per-package versions) is reserved as a future extension and
-  hinted at by `ChangesetMode::Independent` but not implemented.
+  next version per group. Pre-release identifiers (`-alpha.1`,
+  `-rc.2`) aren't modeled.
+- **Linked versioning.** A group pins its members to one shared
+  version (changesets' "fixed" behavior). "Linked" mode — members
+  bumped together but allowed to drift — isn't modeled.
+
+## Multi-line releases (built)
+
+porter is no longer single-mode. A repo declares one or more `[[group]]`
+blocks; each group is an independent version line with its own changelog
+and its own tags, and a changeset names the group(s) it bumps. A
+component within a group bundles a version source and an optional
+artifact, and cuts a per-component tag (`<id>/v<version>`). See the
+README "Configuration" section and [artifact-kinds.md](artifact-kinds.md).

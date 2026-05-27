@@ -15,55 +15,63 @@ $ porter status --json
 
 ```json
 {
-  "current": "0.5.2",
-  "next": "0.5.3",
-  "bump": "minor",
-  "pr_title": "Version Packages: 0.5.3",
-  "changesets": [
+  "groups": [
     {
-      "path": ".changeset/feat-attest.md",
+      "name": "sdk",
+      "current": "0.5.2",
+      "next": "0.5.3",
       "bump": "minor",
-      "summary": "Add the attest subcommand."
-    }
-  ]
+      "tags": ["py-sdk/v0.5.3", "ts-sdk/v0.5.3"],
+      "changesets": [
+        {
+          "path": ".changeset/feat-attest.md",
+          "bump": "minor",
+          "summary": "Add the attest subcommand.",
+          "groups": ["sdk"]
+        }
+      ]
+    },
+    { "name": "app", "current": "1.2.0", "next": null, "bump": null, "tags": [], "changesets": [] }
+  ],
+  "pr_title": "Version Packages: 0.5.3"
 }
 ```
 
-| Field         | Type                            | When                             |
-| ------------- | ------------------------------- | -------------------------------- |
-| `current`     | string (semver)                 | always                           |
-| `next`        | string (semver) or `null`       | `null` iff `changesets` is empty |
-| `bump`        | `"patch"` / `"minor"` / `"major"` or `null` | `null` iff `changesets` is empty |
-| `pr_title`    | string or `null`                | `null` iff `changesets` is empty |
-| `changesets`  | array of objects                | always; empty when none pending  |
-| `changesets[].path`    | string (path relative to repo root) | always |
-| `changesets[].bump`    | `"patch"` / `"minor"` / `"major"`   | always |
-| `changesets[].summary` | string (full body of the changeset) | always |
+| Field                  | Type                                        | When                                  |
+| ---------------------- | ------------------------------------------- | ------------------------------------- |
+| `groups`               | array of objects                            | always; one per `[[group]]`           |
+| `groups[].name`        | string                                      | always                                |
+| `groups[].current`     | string (semver)                             | always                                |
+| `groups[].next`        | string (semver) or `null`                   | `null` iff the group has no pending changesets |
+| `groups[].bump`        | `"patch"` / `"minor"` / `"major"` or `null` | `null` iff the group has no pending changesets |
+| `groups[].tags`        | array of strings                            | the tags the group would cut; empty when not bumping |
+| `groups[].changesets`  | array of objects (`path`, `bump`, `summary`, `groups`) | the changesets targeting this group |
+| `pr_title`             | string or `null`                            | `null` iff no group has pending changesets |
 
 Notes:
 - `next` follows the cargo / Changesets pre-1.0 convention. See [How
   `next` is computed](../README.md#how-next-is-computed) in the README.
 - `pr_title` is the rolling Version PR title rendered from porter.toml
-  `[release].version_pr_title` (default `Version Packages: {version}`),
-  with `{version}`/`{tag}` substituted for the next version. `version.yml`
-  uses it as the PR title and bump-commit subject.
-- `summary` is the changeset body verbatim, including any literal
-  `\n---` lines inside the prose. It's the same string that lands in
-  `CHANGELOG.md` and the GitHub Release notes.
+  `[release].version_pr_title`. It's `null` exactly when nothing is
+  releasable, so `version.yml` uses it as the release/skip signal. When a
+  single group bumps, `{version}` is filled in; when several do, it falls
+  back to the literal stem.
+- `summary` is the changeset body verbatim. It's the same string that lands
+  in the group's changelog and the GitHub Release notes.
 
 **Consuming this in bash:**
 
 ```sh
 status=$(porter status --json)
-next=$(echo "$status" | jq -r '.next // empty')
-if [[ -z "$next" ]]; then
+pr_title=$(echo "$status" | jq -r '.pr_title // empty')
+if [[ -z "$pr_title" ]]; then
   echo "no pending changesets"
   exit 0
 fi
 ```
 
-`jq -r '.next // empty'` is the canonical way to coalesce the
-`null`-when-empty case; that's what porter's own version.yml does.
+`jq -r '.pr_title // empty'` coalesces the `null`-when-nothing-to-release
+case; that's the skip check porter's own version.yml uses.
 
 ## `porter matrix --compact`
 
@@ -78,6 +86,10 @@ $ porter matrix --compact
       "id": "cli-binary-porter-x86_64-unknown-linux-gnu",
       "kind": "cli-binary",
       "name": "porter",
+      "group": "default",
+      "tag": "v0.5.3",
+      "version": "0.5.3",
+      "auth_kind": "none",
       "package": "porter-cli",
       "target": "x86_64-unknown-linux-gnu",
       "runner": "ubuntu-latest"
@@ -86,6 +98,10 @@ $ porter matrix --compact
       "id": "cli-binary-porter-aarch64-apple-darwin",
       "kind": "cli-binary",
       "name": "porter",
+      "group": "default",
+      "tag": "v0.5.3",
+      "version": "0.5.3",
+      "auth_kind": "none",
       "package": "porter-cli",
       "target": "aarch64-apple-darwin",
       "runner": "macos-14"
@@ -102,16 +118,20 @@ matrix: ${{ fromJSON(needs.tag.outputs.matrix) }}
 ```
 
 Top-level always has a single `include` key. Each row is a flat object
-with `id`, `kind`, `name`, plus a kind-specific subset of fields.
+with common fields plus a kind-specific subset.
 
 **Common fields (every row):**
 
-| Field    | Description                                              |
-| -------- | -------------------------------------------------------- |
-| `id`     | Unique row identifier; used as the matrix job name.      |
-| `kind`   | `"cli-binary"`, `"oci-image"`, `"helm-chart"`, `"npm-package"`, or `"python-wheel"`. |
-| `name`   | The artifact's `name` field from porter.toml.            |
-| `runner` | GitHub-hosted runner label (`ubuntu-latest`, `macos-14`, etc.). |
+| Field       | Description                                              |
+| ----------- | -------------------------------------------------------- |
+| `id`        | Unique row identifier; used as the matrix job name.      |
+| `kind`      | `"cli-binary"`, `"oci-image"`, `"helm-chart"`, `"npm-package"`, or `"python-wheel"`. |
+| `name`      | The component id (the artifact's public name).           |
+| `group`     | The group the component releases in.                     |
+| `tag`       | The git tag this artifact publishes under (`<id>/v<version>`, or a custom prefix). |
+| `version`   | The bare version (`0.5.3`) — what images/charts are tagged with. |
+| `auth_kind` | Registry auth: `"none"`, `"github-token"`, `"basic"`, or `"token"`. |
+| `runner`    | GitHub-hosted runner label (`ubuntu-latest`, `macos-14`, etc.). |
 
 **Kind-specific fields:**
 
@@ -123,7 +143,9 @@ with `id`, `kind`, `name`, plus a kind-specific subset of fields.
 | `npm-package`   | `path`, `registry`                                  |
 | `python-wheel`  | `path`                                              |
 
-Fields that don't apply to a given kind are omitted (not `null`) so
+Registry auth also adds `username_secret`/`password_secret` (basic) or
+`token_secret` (token) — names of keys in the workflow's `registry-auth`
+JSON secret. Fields that don't apply to a row are omitted (not `null`) so
 the JSON stays compact.
 
 **Filtering:** `--kind <name>` restricts the output to one kind.

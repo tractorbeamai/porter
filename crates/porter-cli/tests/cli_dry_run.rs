@@ -26,13 +26,11 @@ fn fixture() -> TempDir {
             [changesets]
             directory = ".changeset"
 
-            [[versioned_files]]
-            type = "cargo-workspace"
-            path = "Cargo.toml"
-
-            [release]
-            tag_prefix = "v"
-            changelog = "CHANGELOG.md"
+            [[group]]
+            name = "default"
+            components = [
+              { id = "porter", type = "cargo-workspace", path = "Cargo.toml", tag_prefix = "v" },
+            ]
         "#},
     )
     .unwrap();
@@ -81,12 +79,12 @@ fn version_dry_run_does_not_modify_files() {
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains("would bump 0.1.0 ->"),
+        stdout.contains("would bump default: 0.1.0 ->"),
         "expected next-version line in stdout; got: {stdout}"
     );
     assert!(
-        stdout.contains("would rewrite:"),
-        "expected dry-run rewrite preview; got: {stdout}"
+        stdout.contains("would consume"),
+        "expected dry-run consume preview; got: {stdout}"
     );
 
     let cargo_toml_after = fs::read_to_string(dir.path().join("Cargo.toml")).unwrap();
@@ -121,11 +119,14 @@ fn status_json_emits_next_field() {
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("status JSON parses");
-    assert_eq!(parsed["current"], "0.1.0");
+    let group = &parsed["groups"][0];
+    assert_eq!(group["name"], "default");
+    assert_eq!(group["current"], "0.1.0");
     assert!(
-        parsed["next"].is_string(),
+        group["next"].is_string(),
         "expected next to be a string; got {}",
-        parsed["next"]
+        group["next"]
     );
-    assert_eq!(parsed["bump"], "minor");
+    assert_eq!(group["bump"], "minor");
+    assert_eq!(parsed["pr_title"], "Version Packages: 0.1.1");
 }

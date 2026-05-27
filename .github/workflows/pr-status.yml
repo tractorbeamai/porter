@@ -25,6 +25,16 @@ on:
         required: false
         type: string
         default: porter/version
+      build-from-source:
+        description: |
+          Build the porter CLI from the checked-out source instead of
+          installing a released binary. porter sets this on its own repo so a
+          PR that changes the config format or status output is read by the
+          porter it ships, not the previously-released one. Consumers leave it
+          false and get the released CLI.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -45,7 +55,18 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
+      # Acquire porter one of two ways: a released binary for consumers, or a
+      # source build for porter's own repo (the released CLI can't parse a PR
+      # that changes porter's own config/output — same bootstrap as
+      # porter-release.yml).
+      - name: Build porter from source
+        if: inputs.build-from-source
+        run: |
+          cargo build --bin porter --locked
+          echo "$PWD/target/debug" >> "$GITHUB_PATH"
+
       - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
+        if: ${{ !inputs.build-from-source }}
         with:
           version: ${{ inputs.porter-version }}
 
@@ -68,11 +89,16 @@ jobs:
         run: |
           set -euo pipefail
           body=$(printf '%s' "$STATUS_JSON" | jq -r '
-            if (.changesets | length) == 0 then
-              "### 🚛 porter\n\nNo changeset detected. If this PR ships a user-visible change, run `porter add` and push the file. If not (docs, CI, refactor), ignore this comment."
-            else
-              "### 🚛 porter\n\nThis PR adds **" + (.changesets | length | tostring) + " changeset(s)** — overall bump **" + .bump + "**. On merge, the version moves **" + .current + " → " + .next + "**.\n\n<details><summary>Pending entries</summary>\n\n" + (.changesets | map("- **" + .bump + "** — " + .summary) | join("\n")) + "\n\n</details>"
-            end
+            ([.groups[].changesets[]] | length) as $n
+            | if $n == 0 then
+                "### 🚛 porter\n\nNo changeset detected. If this PR ships a user-visible change, run `porter add` and push the file. If not (docs, CI, refactor), ignore this comment."
+              else
+                "### 🚛 porter\n\nThis PR adds **" + ($n | tostring) + " changeset(s)**. On merge:\n\n"
+                + ([.groups[] | select(.next) | "- **" + .name + "**: " + .current + " → " + .next + " (" + .bump + ")"] | join("\n"))
+                + "\n\n<details><summary>Pending entries</summary>\n\n"
+                + ([.groups[].changesets[] | "- **" + .bump + "** — " + .summary] | join("\n"))
+                + "\n\n</details>"
+              end
           ')
           {
             echo 'body<<PORTER_BODY_EOF'

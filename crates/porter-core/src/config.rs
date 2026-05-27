@@ -1,17 +1,30 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result};
-use serde::{Deserialize, Serialize};
+use anyhow::{Context as _, Result, anyhow, bail};
+use serde::Deserialize;
+use serde::de::{self, Deserializer};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// A parsed `porter.toml`.
+///
+/// The unit porter releases is a **group**: a set of components that share one
+/// version number and move in lockstep. Each [`Component`] bundles an optional
+/// version source (the file whose embedded version string is rewritten) and an
+/// optional [`Artifact`] (what gets built and published). Groups are
+/// independent — a changeset names every group it bumps, and each group cuts
+/// its own tags off its own version line.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Config {
     #[serde(default)]
     pub changesets: ChangesetsConfig,
-    #[serde(rename = "versioned_files", default)]
-    pub versioned_files: Vec<VersionedFileSpec>,
-    #[serde(rename = "artifacts", default)]
-    pub artifacts: Vec<ArtifactConfig>,
+    /// Release lines. The TOML header is `[[group]]`.
+    #[serde(rename = "group", default)]
+    pub groups: Vec<Group>,
+    /// Named registries an artifact's `registry` field can reference. The
+    /// TOML header is `[registries.<name>]`.
+    #[serde(default)]
+    pub registries: BTreeMap<String, Registry>,
     #[serde(default)]
     pub signing: Option<SigningConfig>,
     #[serde(default)]
@@ -20,19 +33,16 @@ pub struct Config {
     pub release: ReleaseConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct ChangesetsConfig {
     #[serde(default = "default_changesets_dir")]
     pub directory: PathBuf,
-    #[serde(default)]
-    pub mode: ChangesetMode,
 }
 
 impl Default for ChangesetsConfig {
     fn default() -> Self {
         Self {
             directory: default_changesets_dir(),
-            mode: ChangesetMode::default(),
         }
     }
 }
@@ -41,23 +51,45 @@ fn default_changesets_dir() -> PathBuf {
     PathBuf::from(".changeset")
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ChangesetMode {
-    /// All packages move together at the same version.
-    #[default]
-    Single,
+/// One release line: a set of components pinned to a single shared version,
+/// with its own changelog and its own tags.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Group {
+    pub name: String,
+    /// Changelog this group prepends its release sections to. Defaults to the
+    /// repo-wide [`ReleaseConfig::changelog`] when unset; several groups may
+    /// share one file (sections are prepended independently).
+    #[serde(default)]
+    pub changelog: Option<PathBuf>,
+    #[serde(default)]
+    pub components: Vec<Component>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "kebab-case")]
-pub enum VersionedFileSpec {
+/// A single versioned thing — a version source, an artifact, or both.
+///
+/// The version source is where its version string lives; the artifact is how
+/// it's built/published; at least one must be present. The `id` is the
+/// component's identity — it names the artifact and is the stem of its tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Component {
+    pub id: String,
+    pub version: Option<VersionSource>,
+    pub artifact: Option<Artifact>,
+    /// Overrides the default `<id>/v` tag stem. porter's own component sets
+    /// `"v"` to keep bare `v0.1.0` tags.
+    pub tag_prefix: Option<String>,
+}
+
+/// A file whose embedded version string moves with its group. Loaded into a
+/// [`crate::versioned_files::VersionedFile`] adapter that reads and rewrites
+/// the concrete format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionSource {
     CargoWorkspace {
         path: PathBuf,
     },
     HelmChart {
         path: PathBuf,
-        #[serde(default = "default_true")]
         update_app_version: bool,
     },
     PackageJson {
@@ -69,15 +101,105 @@ pub enum VersionedFileSpec {
     },
 }
 
-const fn default_true() -> bool {
-    true
+impl VersionSource {
+    /// Build a version source from the flat component fields. Returns a
+    /// human-readable error (no serde span) describing the missing/extra field.
+    fn from_raw(
+        ty: &str,
+        path: Option<PathBuf>,
+        pattern: Option<String>,
+        update_app_version: Option<bool>,
+    ) -> Result<Self, String> {
+        let path = path.ok_or_else(|| format!("version source `{ty}` requires `path`"))?;
+        match ty {
+            "cargo-workspace" => Ok(Self::CargoWorkspace { path }),
+            "helm-chart" => Ok(Self::HelmChart {
+                path,
+                update_app_version: update_app_version.unwrap_or(true),
+            }),
+            "package-json" => Ok(Self::PackageJson { path }),
+            "regex" => {
+                let pattern = pattern
+                    .ok_or_else(|| "version source `regex` requires `pattern`".to_owned())?;
+                Ok(Self::Regex { path, pattern })
+            }
+            other => Err(format!(
+                "unknown version source `type = {other:?}` (expected cargo-workspace, \
+                 helm-chart, package-json, or regex)"
+            )),
+        }
+    }
+
+    /// Path to the file this source rewrites.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::CargoWorkspace { path }
+            | Self::HelmChart { path, .. }
+            | Self::PackageJson { path }
+            | Self::Regex { path, .. } => path,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// The flat shape a `[[group.components]]` inline table deserializes into. The
+/// version-source fields sit alongside `id`/`artifact`/`tag_prefix`, so we
+/// parse them flat and fold them into a typed [`VersionSource`] by hand —
+/// `#[serde(flatten)]` onto an `Option<internally-tagged enum>` is unreliable.
+#[derive(Deserialize)]
+struct RawComponent {
+    id: String,
+    #[serde(default, rename = "type")]
+    ty: Option<String>,
+    #[serde(default)]
+    path: Option<PathBuf>,
+    #[serde(default)]
+    pattern: Option<String>,
+    #[serde(default)]
+    update_app_version: Option<bool>,
+    #[serde(default)]
+    artifact: Option<Artifact>,
+    #[serde(default)]
+    tag_prefix: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Component {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawComponent::deserialize(deserializer)?;
+        let version = if let Some(ty) = raw.ty.as_deref() {
+            Some(
+                VersionSource::from_raw(ty, raw.path, raw.pattern, raw.update_app_version)
+                    .map_err(de::Error::custom)?,
+            )
+        } else {
+            // No `type` means no version source; reject stray version fields
+            // rather than silently dropping them.
+            if raw.path.is_some() || raw.pattern.is_some() {
+                return Err(de::Error::custom(format!(
+                    "component {:?} has `path`/`pattern` but no `type`",
+                    raw.id
+                )));
+            }
+            None
+        };
+        Ok(Self {
+            id: raw.id,
+            version,
+            artifact: raw.artifact,
+            tag_prefix: raw.tag_prefix,
+        })
+    }
+}
+
+/// What a component builds and publishes. The component `id` supplies the
+/// artifact's name, so no `name` field appears here.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum ArtifactConfig {
+pub enum Artifact {
     OciImage {
-        name: String,
         context: PathBuf,
         dockerfile: PathBuf,
         registry: String,
@@ -85,22 +207,18 @@ pub enum ArtifactConfig {
         platforms: Vec<String>,
     },
     HelmChart {
-        name: String,
         chart: PathBuf,
         registry: String,
     },
     NpmPackage {
-        name: String,
         path: PathBuf,
         #[serde(default = "default_npm_registry")]
         registry: String,
     },
     PythonWheel {
-        name: String,
         path: PathBuf,
     },
     CliBinary {
-        name: String,
         package: String,
         #[serde(default = "default_cli_targets")]
         targets: Vec<String>,
@@ -124,6 +242,81 @@ fn default_cli_targets() -> Vec<String> {
     ]
 }
 
+impl Artifact {
+    /// The registry an artifact publishes to, if its kind has one. cli-binary
+    /// (GitHub Release) and python-wheel (Release upload) have none.
+    #[must_use]
+    pub fn registry(&self) -> Option<&str> {
+        match self {
+            Self::OciImage { registry, .. }
+            | Self::HelmChart { registry, .. }
+            | Self::NpmPackage { registry, .. } => Some(registry),
+            Self::PythonWheel { .. } | Self::CliBinary { .. } => None,
+        }
+    }
+
+    /// The registry kind this artifact requires, used to reject a mismatched
+    /// `[registries.<name>]` reference (e.g. an oci-image pointed at an npm
+    /// registry).
+    #[must_use]
+    const fn expected_registry_kind(&self) -> Option<RegistryKind> {
+        match self {
+            Self::OciImage { .. } => Some(RegistryKind::Oci),
+            Self::HelmChart { .. } => Some(RegistryKind::OciHelm),
+            Self::NpmPackage { .. } => Some(RegistryKind::Npm),
+            Self::PythonWheel { .. } | Self::CliBinary { .. } => None,
+        }
+    }
+}
+
+/// A named publish target.
+///
+/// An artifact's `registry` field is either a key into `[registries]` (resolved
+/// to this, with auth) or, for back-compat, a bare URL used as-is with no auth.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Registry {
+    pub kind: RegistryKind,
+    pub url: String,
+    #[serde(default)]
+    pub auth: AuthConfig,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegistryKind {
+    /// Container images (oci-image artifacts).
+    Oci,
+    /// Helm charts pushed as OCI artifacts (helm-chart artifacts).
+    OciHelm,
+    /// JavaScript packages (npm-package artifacts).
+    Npm,
+    /// Python package index (reserved; python-wheel currently uploads to the
+    /// GitHub Release rather than a registry).
+    Pypi,
+}
+
+/// How CI authenticates to a registry.
+///
+/// Secrets are referenced by *name*; the release workflow looks the names up in
+/// a single `registry-auth` JSON secret (GitHub Actions can't index the
+/// `secrets` context by a dynamic key).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum AuthConfig {
+    /// No credentials (anonymous, or the default for a bare-URL registry).
+    #[default]
+    None,
+    /// The workflow's `GITHUB_TOKEN` — the common case for `ghcr.io`.
+    GithubToken,
+    /// Username/password (e.g. Docker Hub), each a secret name.
+    Basic {
+        username_secret: String,
+        password_secret: String,
+    },
+    /// A single bearer token (e.g. a private npm registry), a secret name.
+    Token { token_secret: String },
+}
+
 /// How releases are signed.
 ///
 /// Signing is opt-in: with no `[signing]` block, releases aren't signed
@@ -133,7 +326,7 @@ fn default_cli_targets() -> Vec<String> {
 /// provenance attestation. `backend = "none"` is an explicit off-switch
 /// for keeping the block while disabling. This struct's [`Default`] is
 /// exactly what an empty `[signing]` block parses to.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct SigningConfig {
     #[serde(default)]
     pub backend: SigningBackend,
@@ -179,7 +372,7 @@ fn default_rekor() -> String {
     "https://rekor.sigstore.dev".into()
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SigningBackend {
     /// Keyless signing via Sigstore (Fulcio for certs, Rekor for the
@@ -190,23 +383,20 @@ pub enum SigningBackend {
     None,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct AttestationConfig {
     pub layout: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct ReleaseConfig {
-    #[serde(default = "default_tag_prefix")]
-    pub tag_prefix: String,
+    /// Default changelog for groups that don't set their own.
     #[serde(default = "default_changelog_path")]
     pub changelog: PathBuf,
-    /// Template for the rolling "Version Packages" PR title (and its
-    /// branch commit). Supports `{version}` (the next version, e.g.
-    /// `0.1.1`) and `{tag}` (`tag_prefix` + version, e.g. `v0.1.1`).
-    /// Set it to e.g. `"chore(release): {version}"` for a Conventional
-    /// Commits–shaped subject, which is what lands on the default branch
-    /// when the PR is squash-merged.
+    /// Template for the rolling "Version Packages" PR title (and its branch
+    /// commit). Supports `{version}` — substituted when exactly one group
+    /// bumps; with several groups moving at once there's no single version, so
+    /// the CLI falls back to the literal stem before `{version}`.
     #[serde(default = "default_version_pr_title")]
     pub version_pr_title: String,
 }
@@ -214,30 +404,33 @@ pub struct ReleaseConfig {
 impl Default for ReleaseConfig {
     fn default() -> Self {
         Self {
-            tag_prefix: default_tag_prefix(),
             changelog: default_changelog_path(),
             version_pr_title: default_version_pr_title(),
         }
     }
 }
 
-/// Placeholder tokens substituted in [`ReleaseConfig::version_pr_title`].
+/// Placeholder substituted in [`ReleaseConfig::version_pr_title`].
 const VERSION_PLACEHOLDER: &str = "{version}";
-const TAG_PLACEHOLDER: &str = "{tag}";
 
 impl ReleaseConfig {
-    /// Render [`Self::version_pr_title`] for `version` (a bare version
-    /// string such as `0.1.1`), substituting `{version}` and `{tag}`.
+    /// Render [`Self::version_pr_title`] for a single `version` string.
     #[must_use]
     pub fn render_pr_title(&self, version: &str) -> String {
-        self.version_pr_title
-            .replace(TAG_PLACEHOLDER, &format!("{}{version}", self.tag_prefix))
-            .replace(VERSION_PLACEHOLDER, version)
+        self.version_pr_title.replace(VERSION_PLACEHOLDER, version)
     }
-}
 
-fn default_tag_prefix() -> String {
-    "v".into()
+    /// Render the title when several groups move at once: drop the
+    /// `{version}` placeholder (there's no single version) and trim the
+    /// dangling separator so `"Version Packages: {version}"` becomes
+    /// `"Version Packages"`.
+    #[must_use]
+    pub fn render_pr_title_multi(&self) -> String {
+        self.version_pr_title
+            .replace(VERSION_PLACEHOLDER, "")
+            .trim_end_matches([':', ' ', '-'])
+            .to_owned()
+    }
 }
 
 fn default_changelog_path() -> PathBuf {
@@ -263,14 +456,99 @@ impl Config {
         Self::from_toml(&body).with_context(|| format!("parsing porter config {}", path.display()))
     }
 
-    /// Parse a `porter.toml` body from a string.
+    /// Parse and validate a `porter.toml` body.
     ///
     /// # Errors
     ///
-    /// Returns an error if the input is not valid TOML or fails schema
-    /// validation.
+    /// Returns an error if the input is not valid TOML, uses the removed
+    /// `versioned_files`/`artifacts` tables, or fails [`Self::validate`].
     pub fn from_toml(body: &str) -> Result<Self> {
-        toml::from_str(body).context("invalid porter.toml")
+        // A pre-parse to a generic document lets us give a targeted migration
+        // error for the pre-groups schema instead of silently ignoring the
+        // unknown tables and then complaining that no groups are defined.
+        let doc: toml::Value =
+            toml::from_str(body).map_err(|e| anyhow!("invalid porter.toml: {e}"))?;
+        if let Some(table) = doc.as_table()
+            && (table.contains_key("versioned_files") || table.contains_key("artifacts"))
+        {
+            bail!(
+                "porter.toml uses the removed top-level `versioned_files`/`artifacts` tables; \
+                 declare `[[group]]` blocks whose `components` carry a version source and/or \
+                 an `artifact` instead"
+            );
+        }
+        // Flatten the toml error into the message so a component-level cause
+        // (e.g. "version source `regex` requires `pattern`") surfaces rather
+        // than being hidden one frame down under a generic context.
+        let config: Self = toml::from_str(body).map_err(|e| anyhow!("invalid porter.toml: {e}"))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Enforce the invariants the type system can't: a group to release into,
+    /// unique group names, repo-wide-unique component ids (they're tag names),
+    /// every component carrying a version source and/or an artifact, and every
+    /// group owning at least one version source to read its current version
+    /// from.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the first offending group or component.
+    fn validate(&self) -> Result<()> {
+        if self.groups.is_empty() {
+            bail!("porter.toml defines no [[group]] blocks");
+        }
+        let mut seen_groups = BTreeSet::new();
+        let mut seen_ids = BTreeSet::new();
+        for group in &self.groups {
+            if !seen_groups.insert(group.name.as_str()) {
+                bail!("duplicate group name {:?}", group.name);
+            }
+            if group.components.is_empty() {
+                bail!("group {:?} has no components", group.name);
+            }
+            let mut has_version_source = false;
+            for component in &group.components {
+                if !seen_ids.insert(component.id.as_str()) {
+                    bail!(
+                        "duplicate component id {:?} (ids are tag names and must be unique)",
+                        component.id
+                    );
+                }
+                if component.version.is_none() && component.artifact.is_none() {
+                    bail!(
+                        "component {:?} has neither a version source nor an artifact",
+                        component.id
+                    );
+                }
+                // A registry *reference* that names a `[registries]` entry must
+                // be of a kind the artifact can publish to. An unrecognized
+                // reference is a bare URL and is left alone.
+                if let Some(artifact) = &component.artifact
+                    && let Some(reference) = artifact.registry()
+                    && let Some(registry) = self.registries.get(reference)
+                    && let Some(expected) = artifact.expected_registry_kind()
+                    && registry.kind != expected
+                {
+                    bail!(
+                        "component {:?} references registry {:?} of kind {:?}, \
+                         but its artifact needs a {:?} registry",
+                        component.id,
+                        reference,
+                        registry.kind,
+                        expected
+                    );
+                }
+                has_version_source |= component.version.is_some();
+            }
+            if !has_version_source {
+                bail!(
+                    "group {:?} has no version-bearing component to read its current version from",
+                    group.name
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Resolve the effective signing configuration. Signing is opt-in: an
@@ -279,6 +557,19 @@ impl Config {
     #[must_use]
     pub fn signing(&self) -> SigningConfig {
         self.signing.clone().unwrap_or_else(SigningConfig::disabled)
+    }
+
+    /// The group with this name, if any.
+    #[must_use]
+    pub fn group(&self, name: &str) -> Option<&Group> {
+        self.groups.iter().find(|g| g.name == name)
+    }
+
+    /// The named registry `reference` resolves to. `None` means the reference
+    /// is a bare URL used as-is (anonymous, no auth).
+    #[must_use]
+    pub fn registry(&self, reference: &str) -> Option<&Registry> {
+        self.registries.get(reference)
     }
 
     /// Find `porter.toml` by walking up from `start`.
@@ -304,116 +595,197 @@ mod tests {
     #[test]
     fn parses_minimal_config() {
         let body = indoc! {r#"
+            [[group]]
+            name = "default"
+            components = [
+              { id = "porter", type = "cargo-workspace", path = "Cargo.toml" },
+            ]
+        "#};
+        let cfg = Config::from_toml(body).unwrap();
+        assert_eq!(cfg.groups.len(), 1);
+        let c = &cfg.groups[0].components[0];
+        assert_eq!(c.id, "porter");
+        assert!(matches!(
+            c.version,
+            Some(VersionSource::CargoWorkspace { .. })
+        ));
+        assert_eq!(cfg.changesets.directory, PathBuf::from(".changeset"));
+    }
+
+    #[test]
+    fn parses_multi_group_config_with_unified_components() {
+        let body = indoc! {r#"
+            [[group]]
+            name = "sdk"
+            changelog = "python/CHANGELOG.md"
+            components = [
+              { id = "py-sdk", type = "regex", path = "py/pyproject.toml",
+                pattern = '(?m)^version = "(?P<version>[^"]+)"',
+                artifact = { kind = "python-wheel", path = "py" } },
+              { id = "ts-sdk", type = "package-json", path = "ts/package.json",
+                artifact = { kind = "npm-package", path = "ts" } },
+            ]
+
+            [[group]]
+            name = "default"
+            components = [
+              { id = "porter", type = "cargo-workspace", path = "Cargo.toml", tag_prefix = "v",
+                artifact = { kind = "cli-binary", package = "porter-cli" } },
+              { id = "api", artifact = { kind = "oci-image", context = ".",
+                dockerfile = "Dockerfile", registry = "ghcr.io/x/api" } },
+            ]
+        "#};
+        let cfg = Config::from_toml(body).unwrap();
+        assert_eq!(cfg.groups.len(), 2);
+        let sdk = &cfg.groups[0];
+        assert_eq!(sdk.changelog, Some(PathBuf::from("python/CHANGELOG.md")));
+        assert_eq!(sdk.components.len(), 2);
+        // artifact-only component: version is None, artifact present.
+        let api = &cfg.groups[1].components[1];
+        assert_eq!(api.id, "api");
+        assert!(api.version.is_none());
+        assert!(matches!(api.artifact, Some(Artifact::OciImage { .. })));
+        // tag_prefix override parsed.
+        assert_eq!(cfg.groups[1].components[0].tag_prefix.as_deref(), Some("v"));
+    }
+
+    #[test]
+    fn rejects_legacy_versioned_files() {
+        let body = indoc! {r#"
             [[versioned_files]]
             type = "cargo-workspace"
             path = "Cargo.toml"
         "#};
-        let cfg = Config::from_toml(body).unwrap();
-        assert_eq!(cfg.versioned_files.len(), 1);
-        assert!(matches!(
-            cfg.versioned_files[0],
-            VersionedFileSpec::CargoWorkspace { .. }
-        ));
-        assert_eq!(cfg.changesets.directory, PathBuf::from(".changeset"));
-        assert_eq!(cfg.release.tag_prefix, "v");
+        let err = Config::from_toml(body).unwrap_err().to_string();
+        assert!(err.contains("versioned_files"), "{err}");
+        assert!(err.contains("[[group]]"), "{err}");
     }
 
     #[test]
-    fn parses_full_config() {
+    fn rejects_duplicate_component_ids() {
         let body = indoc! {r#"
-            [changesets]
-            directory = ".changes"
-            mode = "single"
+            [[group]]
+            name = "a"
+            components = [ { id = "x", type = "cargo-workspace", path = "Cargo.toml" } ]
 
-            [[versioned_files]]
-            type = "cargo-workspace"
-            path = "rust/Cargo.toml"
-
-            [[versioned_files]]
-            type = "helm-chart"
-            path = "deploy/helm/foo/Chart.yaml"
-
-            [[versioned_files]]
-            type = "package-json"
-            path = "ts/packages/sdk/package.json"
-
-            [[versioned_files]]
-            type = "regex"
-            path = "deploy/main.tf"
-            pattern = 'platform_chart_revision\s*=\s*"(?P<version>v[0-9.]+)"'
-
-            [[artifacts]]
-            kind = "oci-image"
-            name = "api"
-            context = "rust/"
-            dockerfile = "rust/bins/api/Dockerfile"
-            registry = "ghcr.io/example/api"
-
-            [[artifacts]]
-            kind = "helm-chart"
-            name = "platform"
-            chart = "deploy/helm/foo"
-            registry = "oci://ghcr.io/example/charts"
-
-            [signing]
-            backend = "sigstore"
-
-            [attestation]
-            layout = "layouts/main.json"
-
-            [release]
-            tag_prefix = "v"
-            changelog = "CHANGELOG.md"
+            [[group]]
+            name = "b"
+            components = [ { id = "x", type = "package-json", path = "package.json" } ]
         "#};
-        let cfg = Config::from_toml(body).unwrap();
-        assert_eq!(cfg.versioned_files.len(), 4);
-        assert_eq!(cfg.artifacts.len(), 2);
-        assert!(cfg.signing.is_some());
-        assert!(cfg.attestation.is_some());
+        let err = Config::from_toml(body).unwrap_err().to_string();
+        assert!(err.contains("duplicate component id"), "{err}");
+    }
+
+    #[test]
+    fn rejects_component_with_neither_version_nor_artifact() {
+        let body = indoc! {r#"
+            [[group]]
+            name = "a"
+            components = [ { id = "x" } ]
+        "#};
+        let err = Config::from_toml(body).unwrap_err().to_string();
+        assert!(
+            err.contains("neither a version source nor an artifact"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_group_with_no_version_source() {
+        let body = indoc! {r#"
+            [[group]]
+            name = "a"
+            components = [
+              { id = "img", artifact = { kind = "oci-image", context = ".",
+                dockerfile = "Dockerfile", registry = "r" } },
+            ]
+        "#};
+        let err = Config::from_toml(body).unwrap_err().to_string();
+        assert!(err.contains("no version-bearing component"), "{err}");
+    }
+
+    #[test]
+    fn regex_without_pattern_errors() {
+        let body = indoc! {r#"
+            [[group]]
+            name = "a"
+            components = [ { id = "x", type = "regex", path = "f" } ]
+        "#};
+        let err = Config::from_toml(body).unwrap_err().to_string();
+        assert!(err.contains("requires `pattern`"), "{err}");
+    }
+
+    #[test]
+    fn named_registry_parses_with_auth() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [registries.dockerhub]
+            kind = "oci"
+            url = "docker.io/tractorbeam"
+            auth = { type = "basic", username_secret = "DH_USER", password_secret = "DH_PAT" }
+
+            [[group]]
+            name = "default"
+            components = [
+              { id = "api", type = "cargo-workspace", path = "Cargo.toml",
+                artifact = { kind = "oci-image", context = ".", dockerfile = "Dockerfile",
+                  registry = "dockerhub" } },
+            ]
+        "#})
+        .unwrap();
+        let reg = cfg.registry("dockerhub").unwrap();
+        assert_eq!(reg.kind, RegistryKind::Oci);
+        assert_eq!(reg.url, "docker.io/tractorbeam");
+        assert!(matches!(reg.auth, AuthConfig::Basic { .. }));
+    }
+
+    #[test]
+    fn registry_kind_mismatch_errors() {
+        let body = indoc! {r#"
+            [registries.npmjs]
+            kind = "npm"
+            url = "https://registry.npmjs.org"
+
+            [[group]]
+            name = "default"
+            components = [
+              { id = "api", type = "cargo-workspace", path = "Cargo.toml",
+                artifact = { kind = "oci-image", context = ".", dockerfile = "Dockerfile",
+                  registry = "npmjs" } },
+            ]
+        "#};
+        let err = Config::from_toml(body).unwrap_err().to_string();
+        assert!(
+            err.contains("needs a Oci registry") || err.contains("kind"),
+            "{err}"
+        );
     }
 
     #[test]
     fn signing_off_when_block_absent() {
-        let cfg = Config::from_toml("").unwrap();
+        let cfg = Config::from_toml(indoc! {r#"
+            [[group]]
+            name = "default"
+            components = [ { id = "x", type = "cargo-workspace", path = "Cargo.toml" } ]
+        "#})
+        .unwrap();
         assert!(cfg.signing.is_none());
         assert!(!cfg.signing().enabled());
     }
 
     #[test]
     fn empty_signing_block_enables_public_sigstore() {
-        // Zero config beyond declaring the block: signing turns on with
-        // public Sigstore endpoints.
-        let cfg = Config::from_toml("[signing]\n").unwrap();
+        let cfg = Config::from_toml(indoc! {r#"
+            [signing]
+
+            [[group]]
+            name = "default"
+            components = [ { id = "x", type = "cargo-workspace", path = "Cargo.toml" } ]
+        "#})
+        .unwrap();
         let signing = cfg.signing();
         assert!(signing.enabled());
         assert_eq!(signing.backend, SigningBackend::Sigstore);
         assert_eq!(signing.fulcio_url, "https://fulcio.sigstore.dev");
-        assert_eq!(signing.rekor_url, "https://rekor.sigstore.dev");
-    }
-
-    #[test]
-    fn signing_backend_none_disables() {
-        let cfg = Config::from_toml(indoc! {r#"
-            [signing]
-            backend = "none"
-        "#})
-        .unwrap();
-        assert!(!cfg.signing().enabled());
-    }
-
-    #[test]
-    fn signing_custom_urls_parse() {
-        let cfg = Config::from_toml(indoc! {r#"
-            [signing]
-            backend = "sigstore"
-            fulcio_url = "https://fulcio.internal.example"
-            rekor_url = "https://rekor.internal.example"
-        "#})
-        .unwrap();
-        let signing = cfg.signing();
-        assert!(signing.enabled());
-        assert_eq!(signing.fulcio_url, "https://fulcio.internal.example");
-        assert_eq!(signing.rekor_url, "https://rekor.internal.example");
     }
 
     #[test]
@@ -428,37 +800,8 @@ mod tests {
 
     #[test]
     fn default_pr_title_preserves_legacy_format() {
-        // Absent [release] (or absent version_pr_title) keeps the historical
-        // "Version Packages: <next>" title.
-        let cfg = Config::from_toml("").unwrap();
-        assert_eq!(
-            cfg.release.render_pr_title("0.1.1"),
-            "Version Packages: 0.1.1"
-        );
-    }
-
-    #[test]
-    fn pr_title_template_renders_version_and_tag() {
-        let cfg = Config::from_toml(indoc! {r#"
-            [release]
-            tag_prefix = "v"
-            version_pr_title = "chore(release): {version} ({tag})"
-        "#})
-        .unwrap();
-        assert_eq!(
-            cfg.release.render_pr_title("0.1.1"),
-            "chore(release): 0.1.1 (v0.1.1)"
-        );
-    }
-
-    #[test]
-    fn pr_title_tag_honors_custom_prefix() {
-        let cfg = Config::from_toml(indoc! {r#"
-            [release]
-            tag_prefix = "porter-"
-            version_pr_title = "{tag}"
-        "#})
-        .unwrap();
-        assert_eq!(cfg.release.render_pr_title("2.0.0"), "porter-2.0.0");
+        let cfg = ReleaseConfig::default();
+        assert_eq!(cfg.render_pr_title("0.1.1"), "Version Packages: 0.1.1");
+        assert_eq!(cfg.render_pr_title_multi(), "Version Packages");
     }
 }

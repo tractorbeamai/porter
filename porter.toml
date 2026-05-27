@@ -2,41 +2,28 @@
 
 [changesets]
 directory = ".changeset"
-mode = "single"
-
-# Version-bearing files for porter itself. The Cargo workspace version
-# cascades to every member crate...
-[[versioned_files]]
-type = "cargo-workspace"
-path = "Cargo.toml"
-
-# ...and Cargo.lock records that same version for each workspace member, so
-# it must be bumped in lockstep or `cargo build --locked` (CI + the release
-# workflow) fails. cargo-workspace doesn't touch the lock yet, so rewrite the
-# two member entries here. (Other crates' versions never match this pattern.)
-[[versioned_files]]
-type = "regex"
-path = "Cargo.lock"
-pattern = 'name = "porter-(?:core|cli)"\nversion = "(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"'
 
 [release]
-tag_prefix = "v"
 changelog = "CHANGELOG.md"
 # Conventional Commits subject for the rolling Version PR, so the
 # squash-merged release commit reads `chore(release): X.Y.Z` on main.
 version_pr_title = "chore(release): {version}"
 
-# porter publishes a single artifact: itself. The cli-binary block
-# expands per-target inside the release workflow's matrix; each row runs
-# `porter build cli-binary --target <triple>` on a matching runner and
-# uploads the resulting tarball to the GitHub Release.
-[[artifacts]]
-kind = "cli-binary"
-name = "porter"
-package = "porter-cli"
-targets = [
+# porter releases itself as a single group. The Cargo workspace version is the
+# release line and cascades to every member crate; the same release builds the
+# porter CLI. `tag_prefix = "v"` keeps bare `vX.Y.Z` tags (the default stem
+# would be `porter/v`).
+[[group]]
+name = "default"
+components = [
+  { id = "porter", type = "cargo-workspace", path = "Cargo.toml", tag_prefix = "v", artifact = { kind = "cli-binary", package = "porter-cli", targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
+  ] } },
+  # Cargo.lock records that same version for each workspace member, so it must
+  # bump in lockstep or `cargo build --locked` (CI + the release workflow)
+  # fails. It publishes nothing, so it carries no artifact and gets no tag.
+  { id = "cargo-lock", type = "regex", path = "Cargo.lock", pattern = 'name = "porter-(?:core|cli)"\nversion = "(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"' },
 ]

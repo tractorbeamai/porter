@@ -3,7 +3,7 @@
 A worked walkthrough from an empty repo to a shipped GitHub Release.
 The example uses a Rust workspace because that's the path porter
 itself exercises every day — for non-Rust projects, swap the
-`[[versioned_files]]` entry in step 2 and the rest is identical.
+component's version source in step 1 and the rest is identical.
 
 **Time budget:** ~20 minutes the first time, almost all of it
 clicking through the GitHub App form in step 4. Subsequent repos take
@@ -30,53 +30,42 @@ At the repo root:
 [changesets]
 directory = ".changeset"
 
-[[versioned_files]]
-type = "cargo-workspace"
-path = "Cargo.toml"
-
-[[artifacts]]
-kind = "cli-binary"
-name = "myrepo"
-package = "myrepo-cli"  # the crate that produces the binary
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
+# One group, one component: the workspace version is the release line and the
+# same release builds the CLI. tag_prefix = "v" keeps bare vX.Y.Z tags (the
+# default stem would be `myrepo/v`).
+[[group]]
+name = "default"
+components = [
+  { id = "myrepo", type = "cargo-workspace", path = "Cargo.toml", tag_prefix = "v",
+    artifact = { kind = "cli-binary", package = "myrepo-cli" } },
 ]
 
 [release]
-tag_prefix = "v"
 changelog = "CHANGELOG.md"
 ```
 
 If you're not shipping a binary (lib-only crate, internal service,
-docs repo), drop the `[[artifacts]]` block — porter will still
-maintain versions and changelogs without it.
+docs repo), drop the `artifact` — a component can be version-only,
+and porter will still maintain versions and changelogs.
 
-Non-Rust analogues for the `[[versioned_files]]` entry:
+Non-Rust analogues for the component's version source:
 
 ```toml
 # Node
-[[versioned_files]]
-type = "package-json"
-path = "package.json"
+{ id = "myrepo", type = "package-json", path = "package.json" }
 
 # Helm chart
-[[versioned_files]]
-type = "helm-chart"
-path = "deploy/chart/Chart.yaml"
+{ id = "myrepo", type = "helm-chart", path = "deploy/chart/Chart.yaml" }
 
 # Anything else (e.g. Terraform pin)
-[[versioned_files]]
-type = "regex"
-path = "deploy/main.tf"
-pattern = 'image_tag\s*=\s*"(?P<version>v[0-9.]+)"'
+{ id = "myrepo", type = "regex", path = "deploy/main.tf",
+  pattern = 'image_tag\s*=\s*"(?P<version>v[0-9.]+)"' }
 ```
 
-You can stack multiple `[[versioned_files]]` blocks; porter will
-rewrite all of them in lockstep on every bump and refuse to proceed
-if they ever disagree on the current version.
+A group can hold several components (e.g. an SDK shipped for two languages);
+porter rewrites their version sources in lockstep on every bump and refuses to
+proceed if they ever disagree. Separate version lines go in separate
+`[[group]]` blocks. See the README "Configuration" section.
 
 Commit it: `git add porter.toml && git commit -m "chore: add porter.toml"`.
 
@@ -97,8 +86,8 @@ Run `porter status` to sanity-check:
 
 ```
 porter status
-1 changeset, bump=minor
-0.0.0 -> 0.1.0
+default: 0.0.0 -> 0.1.0 (minor)
+  minor  .changeset/initial-release.md  Initial release.
 ```
 
 ## 3. Add a CHANGELOG header

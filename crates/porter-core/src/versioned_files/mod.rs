@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result};
 use semver::Version;
 
-use crate::config::VersionedFileSpec;
+use crate::config::VersionSource;
 
 mod cargo_workspace;
 mod helm_chart;
@@ -38,19 +38,16 @@ pub trait VersionedFile {
     fn write_version(&self, version: &Version) -> Result<()>;
 }
 
-/// Construct an adapter for a single `[[versioned_files]]` entry.
+/// Construct an adapter for a single component's [`VersionSource`].
 ///
-/// `root` is the directory the spec's `path` is resolved against (typically
+/// `root` is the directory the source's `path` is resolved against (typically
 /// the directory containing `porter.toml`).
 ///
 /// # Errors
 ///
-/// Returns an error if the spec's regex pattern fails to compile or is
+/// Returns an error if the source's regex pattern fails to compile or is
 /// missing the required `version` named group.
-pub fn load_versioned_file(
-    root: &Path,
-    spec: &VersionedFileSpec,
-) -> Result<Box<dyn VersionedFile>> {
+pub fn load_versioned_file(root: &Path, spec: &VersionSource) -> Result<Box<dyn VersionedFile>> {
     let resolve = |p: &Path| -> PathBuf {
         if p.is_absolute() {
             p.to_path_buf()
@@ -59,15 +56,13 @@ pub fn load_versioned_file(
         }
     };
     Ok(match spec {
-        VersionedFileSpec::CargoWorkspace { path } => {
-            Box::new(CargoWorkspaceFile::new(resolve(path)))
-        }
-        VersionedFileSpec::HelmChart {
+        VersionSource::CargoWorkspace { path } => Box::new(CargoWorkspaceFile::new(resolve(path))),
+        VersionSource::HelmChart {
             path,
             update_app_version,
         } => Box::new(HelmChartFile::new(resolve(path), *update_app_version)),
-        VersionedFileSpec::PackageJson { path } => Box::new(PackageJsonFile::new(resolve(path))),
-        VersionedFileSpec::Regex { path, pattern } => Box::new(
+        VersionSource::PackageJson { path } => Box::new(PackageJsonFile::new(resolve(path))),
+        VersionSource::Regex { path, pattern } => Box::new(
             RegexFile::new(resolve(path), pattern)
                 .context("compiling regex versioned-file pattern")?,
         ),

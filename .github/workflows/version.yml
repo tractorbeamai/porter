@@ -22,13 +22,21 @@ on:
         default: porter/version
       title:
         description: |
-          Optional override for the Version PR title. When set, the title is
-          `<title>: <next-version>` (legacy behavior). When empty (default),
-          the title comes from porter.toml `[release].version_pr_title` —
-          configure it there to get e.g. a Conventional Commits subject.
+          Optional override for the Version PR title, used verbatim. When empty
+          (default), the title comes from porter.toml `[release].version_pr_title`
+          (with `{version}` filled in when a single group bumps).
         required: false
         type: string
         default: ""
+      build-from-source:
+        description: |
+          Build the porter CLI from the checked-out source instead of
+          installing a released binary. porter sets this on its own repo so a
+          push that changes porter's config format is processed by the porter
+          it ships, not the previously-released one. Consumers leave it false.
+        required: false
+        type: boolean
+        default: false
     secrets:
       app-id:
         description: |
@@ -64,26 +72,43 @@ jobs:
           # scoped to a single `git push` invocation.
           persist-credentials: false
 
+      # Released binary for consumers; source build for porter's own repo (the
+      # released CLI can't parse a push that changes porter's own config —
+      # same bootstrap as porter-release.yml).
+      - name: Build porter from source
+        if: inputs.build-from-source
+        run: |
+          cargo build --bin porter --locked
+          echo "$PWD/target/debug" >> "$GITHUB_PATH"
+
       - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
+        if: ${{ !inputs.build-from-source }}
         with:
           version: ${{ inputs.porter-version }}
 
-      - name: Compute next version
+      - name: Compute release status
         id: next
         run: |
           set -euo pipefail
           status_json=$(porter status --json)
           echo "$status_json"
-          next=$(echo "$status_json" | jq -r '.next // empty')
-          if [[ -z "$next" || "$next" == "null" ]]; then
+          # `.pr_title` is the release/skip signal: porter sets it to null
+          # exactly when no group has pending changesets. There's no single
+          # top-level `.next` anymore — each group has its own under `.groups`.
+          pr_title=$(echo "$status_json" | jq -r '.pr_title // empty')
+          if [[ -z "$pr_title" || "$pr_title" == "null" ]]; then
             echo "no pending changesets; nothing to do"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "next=$next" >> "$GITHUB_OUTPUT"
-          # Title rendered from porter.toml `[release].version_pr_title`.
-          pr_title=$(echo "$status_json" | jq -r '.pr_title // empty')
           echo "pr_title=$pr_title" >> "$GITHUB_OUTPUT"
+          # Per-group summary of the moving lines, for the PR body.
+          summary=$(echo "$status_json" | jq -r '.groups[] | select(.next) | "- **\(.name)**: \(.current) → \(.next)"')
+          {
+            echo "summary<<__PORTER_EOF__"
+            echo "$summary"
+            echo "__PORTER_EOF__"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Apply version bump
         if: steps.next.outputs.skip != 'true'
@@ -116,24 +141,23 @@ jobs:
           # porter rendered from porter.toml `[release].version_pr_title`.
           TITLE: ${{ inputs.title }}
           PR_TITLE: ${{ steps.next.outputs.pr_title }}
-          NEXT: ${{ steps.next.outputs.next }}
+          SUMMARY: ${{ steps.next.outputs.summary }}
           # Route github-context strings through env vars rather than
           # ${{ ... }} expansion inside the shell to avoid template
           # injection (zizmor `template-injection` audit).
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          # The `title` input, when provided, overrides the configured title
-          # with the legacy "<title>: <next>" form. Otherwise use the title
-          # porter rendered from porter.toml. Fall back to the historical
-          # default when `pr_title` is absent — e.g. an installed porter that
-          # predates the field — so the title is never empty.
+          # The `title` input, when provided, is used verbatim. Otherwise use
+          # the title porter rendered from porter.toml. Fall back to a plain
+          # default when `pr_title` is somehow absent so the title is never
+          # empty.
           if [[ -n "$TITLE" ]]; then
-            title="$TITLE: $NEXT"
+            title="$TITLE"
           elif [[ -n "$PR_TITLE" ]]; then
             title="$PR_TITLE"
           else
-            title="Version Packages: $NEXT"
+            title="Version Packages"
           fi
 
           git config user.name "porter[bot]"
@@ -148,8 +172,9 @@ jobs:
           # `porter release notes` emits markdown (a `### Features` section,
           # bullets); include it unfenced so the PR body renders it as
           # formatted release notes rather than a literal code block.
-          body=$(printf '%s\n\n%s\n' \
-            "Rolling release PR maintained by porter. Merging this lands version **$NEXT** and triggers the release workflow." \
+          body=$(printf '%s\n\n%s\n\n%s\n' \
+            "Rolling release PR maintained by porter. Merging it lands the version bump(s) below and triggers the release workflow." \
+            "$SUMMARY" \
             "$notes")
 
           existing=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)
