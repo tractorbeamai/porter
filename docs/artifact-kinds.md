@@ -157,11 +157,76 @@ repo as-is. The image tag is the bare `version` (e.g. `0.5.3`).
 3. Resolve publish state: `docker buildx imagetools inspect <repo>:<version>`.
    If the version is already in the registry the build & push is skipped
    (see [Idempotent re-runs](#idempotent-re-runs)).
-4. `docker/build-push-action@v6` with `tags: <repo>:<version>`,
+4. Build & push: `docker/build-push-action@v6` with `tags: <repo>:<version>`,
    `provenance: false` (porter issues its own SLSA attestation instead
-   of the buildkit-default one).
+   of the buildkit-default one) — **unless** a repo-owned `publish` command
+   is set (see below), in which case porter runs that instead.
 5. When signing is enabled: `cosign sign` + `cosign attest --type
    slsaprovenance1` against `<repo>@<digest>`. See [Signing](#signing).
+
+### Repo-owned publish command
+
+porter doesn't model build knobs (build args, secrets, target stages,
+cache config). Instead, when an image needs them, set a `publish` command and
+the repo owns the build:
+
+```toml
+# A [registries.ecr] with aws-ecr auth (see Registries) covers login for all
+# rows below — including the publish-command rows; the command only owns the
+# build, not auth.
+[[group]]
+name = "default"
+components = [
+  # api/worker share one Dockerfile, selected by a plain build arg.
+  { id = "api", type = "regex", path = "rust/Cargo.toml", pattern = '…',
+    artifact = { kind = "oci-image", context = ".", dockerfile = "rust/Dockerfile",
+      registry = "ecr",
+      publish = "docker buildx build --push --platform $PORTER_PLATFORMS --build-arg BIN=api -f $PORTER_DOCKERFILE -t $PORTER_IMAGE $PORTER_CONTEXT" } },
+  { id = "worker", artifact = { kind = "oci-image", context = ".", dockerfile = "rust/Dockerfile",
+      registry = "ecr",
+      publish = "docker buildx build --push --platform $PORTER_PLATFORMS --build-arg BIN=worker -f $PORTER_DOCKERFILE -t $PORTER_IMAGE $PORTER_CONTEXT" } },
+  # web needs a secret build arg — see build-secrets below.
+  { id = "web", artifact = { kind = "oci-image", context = ".", dockerfile = "ts/web/Dockerfile",
+      registry = "ecr",
+      publish = "docker buildx build --push --platform $PORTER_PLATFORMS --build-arg FONTAWESOME_NPM_AUTH_TOKEN=$FONTAWESOME_NPM_AUTH_TOKEN -f $PORTER_DOCKERFILE -t $PORTER_IMAGE $PORTER_CONTEXT" } },
+]
+```
+
+When `publish` is set, the workflow runs it **instead of**
+`docker/build-push-action`. The command must build *and* push to
+`$PORTER_IMAGE`; porter then resolves the pushed digest for signing (or reads
+it from `$PORTER_DIGEST_FILE` if the command writes one). **Auth is not the
+command's job** — porter still logs in per the registry's declared auth kind
+(`github-token`/`basic`/`token`/`aws-ecr`) before the command runs, so the
+command builds into an authenticated context. To have the command own auth
+too, point it at a `none`-auth (bare-URL) registry and log in inside the
+command. porter exposes these env vars:
+
+| Var | Value |
+| --- | --- |
+| `PORTER_IMAGE` | the full ref to push, `<repo>:<version>` |
+| `PORTER_VERSION` | bare version, e.g. `0.5.3` |
+| `PORTER_TAG` | the component's git tag, e.g. `api/v0.5.3` |
+| `PORTER_CONTEXT` | the artifact `context` |
+| `PORTER_DOCKERFILE` | the artifact `dockerfile` |
+| `PORTER_PLATFORMS` | comma-joined `platforms` |
+| `PORTER_REGISTRY` | the resolved image repo |
+| `PORTER_DIGEST_FILE` | optional output: write the pushed `sha256:…` here if `imagetools inspect $PORTER_IMAGE` won't resolve it |
+
+**Secret build args.** Pass them via the reusable workflow's
+`build-secrets` secret — a JSON object of `name → value`. Each entry is
+exported as an env var the `publish` command can reference (`--build-arg
+NAME=$NAME` or buildx `--secret id=NAME`). This mirrors `registry-auth`;
+values are masked in logs.
+
+```yaml
+# in your calling workflow
+secrets:
+  build-secrets: ${{ toJSON(secrets) }}   # or a curated subset
+```
+
+Idempotency, registry login, and signing all work the same for a
+repo-owned publish command as for the default build.
 
 ## `helm-chart`
 
