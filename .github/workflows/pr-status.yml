@@ -65,7 +65,7 @@ jobs:
           cargo build --bin porter --locked
           echo "$PWD/target/debug" >> "$GITHUB_PATH"
 
-      - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
+      - uses: tractorbeamai/porter/actions/setup-porter@24e837ff87438fdb4fc0ba784c666fcb520ea9bc # v0
         if: ${{ !inputs.build-from-source }}
         with:
           version: ${{ inputs.porter-version }}
