@@ -1,0 +1,58 @@
+name: porter tag
+description: |
+  Cut a porter release: push every pending component tag under the `porter[bot]`
+  App identity (the credential repo rulesets allow to write protected `v…`
+  tags), open one GitHub Release per tag, and emit the artifact build matrix.
+  This is the first job of a release; consumers build + `porter-sign` the matrix
+  rows in downstream jobs.
+
+  Mints its own App token via `actions/create-github-app-token` (referenced
+  directly rather than through `mint-porter-token`, since a composite action
+  cannot reference a local sibling action when consumed cross-repo).
+
+  Prerequisites in the calling job: the repo is checked out with
+  `fetch-depth: 0` and `persist-credentials: false` (porter reads tags and the
+  push uses an explicit token URL); `setup-porter` has run (porter on PATH); the
+  job grants `contents: write`.
+author: Tractorbeam
+
+inputs:
+  app-id:
+    description: porter App ID — `secrets.PORTER_APP_ID` (or the consumer's equivalent).
+    required: true
+  app-private-key:
+    description: porter App private key (PEM) — `secrets.PORTER_APP_PRIVATE_KEY`.
+    required: true
+
+outputs:
+  matrix:
+    description: The `porter matrix --compact` JSON for the downstream build fan-out.
+    value: ${{ steps.tag.outputs.matrix }}
+  tags:
+    description: Newline-separated unique tags this release cut (for a finalize/manifest job).
+    value: ${{ steps.tag.outputs.tags }}
+  has-artifacts:
+    description: "`true` when the matrix has at least one artifact row."
+    value: ${{ steps.tag.outputs.has-artifacts }}
+
+# Logic lives in tag.sh so it can be unit-tested with bats and checked with
+# shellcheck. The App token is minted by the upstream action, then handed to
+# the script as GH_TOKEN.
+runs:
+  using: composite
+  steps:
+    # credential: app-token — minted here and used by tag.sh to push the
+    # protected tags and author the Releases as porter[bot].
+    - id: app-token
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+        permission-contents: write
+
+    - id: tag
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      run: |
+        "$GITHUB_ACTION_PATH/tag.sh"

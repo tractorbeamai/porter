@@ -1,5 +1,27 @@
-# Phase E: admission policy that refuses any image whose attestation
-# chain doesn't validate against porter's signing identity.
+# Phase E: admission policy that refuses any image whose porter attestation
+# chain doesn't validate.
+#
+# Trust model — three independent checks, each doing one job:
+#
+#   * subject (SAN)  — proves *who* signed: one of this org's release
+#     workflows. Keyless cosign binds the Fulcio cert subject to the workflow
+#     that ran `cosign`, so a consumer that signs in its own job signs under
+#     its own identity. The regex is org-scoped and ref-agnostic on purpose —
+#     it is NOT where the "released from a tag" guarantee lives (that was an
+#     accident of porter's old reusable-workflow indirection).
+#   * predicate source — proves *what* was built and *from where*:
+#     `<consumer-repo>@refs/tags/v…`. Because a trusted workflow (per the SAN)
+#     signed it, this assertion is trustworthy. Pinning it per image glob is
+#     what stops a *different* org repo's workflow from signing an image that
+#     claims to be this one (cross-repo confusion).
+#   * predicate builder — proves *how*: porter tooling issued the provenance.
+#
+# The real integrity of the release tag is enforced UPSTREAM, in each
+# publishing repo: branch protection on the default branch + App-gated `v…`
+# tag pushes (the `porter-tag` action / a tag ruleset) mean only `porter[bot]`
+# can create the tag the predicate points at. Operational obligation of the
+# org-wide SAN: every repo whose images this policy admits MUST have that tag
+# protection — the SAN no longer pins a single audited pipeline.
 #
 # Install path:
 #   1. helm install policy-controller sigstore/policy-controller -n cosign-system --create-namespace
@@ -25,12 +47,14 @@ spec:
       keyless:
         url: https://fulcio.sigstore.dev
         identities:
-          # Fulcio's certificate subject is the URL of the workflow file
-          # that requested the OIDC token. Pinning to porter's reusable
-          # release.yml workflow means no other workflow's keyless
-          # signature will satisfy the policy.
+          # Fulcio's certificate subject is the URL of the workflow file that
+          # requested the OIDC token. Org-scoped: any `tractorbeamai` repo's
+          # `release.yml` may sign (the reusable workflow signs as
+          # `…/porter/…release.yml`; a consumer that owns its build signs as
+          # `…/<its-repo>/…release.yml`). Ref-agnostic — the release-tag
+          # binding is the predicate `source` below, not this subject.
           - issuer: https://token.actions.githubusercontent.com
-            subjectRegExp: "^https://github\\.com/tractorbeamai/porter/\\.github/workflows/release\\.yml@refs/tags/v[0-9]+(\\.[0-9]+){2}$"
+            subjectRegExp: "^https://github\\.com/tractorbeamai/[^/]+/\\.github/workflows/release\\.yml@.+$"
       ctlog:
         url: https://rekor.sigstore.dev
 
@@ -40,9 +64,10 @@ spec:
           policy:
             type: cue
             data: |
-              // Tighten the predicate. The build identity must be
-              // porter's, the source repo must match the consuming
-              // repo, and the source ref must look like a release tag.
+              // Tighten the predicate. The build identity must be porter's,
+              // the source repo must match THIS consuming repo (closes the
+              // cross-repo confusion the org-wide subject would otherwise
+              // allow), and the source ref must look like a release tag.
               predicateType: "https://slsa.dev/provenance/v1"
               predicate: {
                 runDetails: {

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Mock `porter` for porter-manifest bats tests: emit a canned merged manifest
+# array for `release manifest` (real porter merges the per-row record files).
+set -euo pipefail
+echo "porter $*" >> "$STUB_LOG"
+case "${1:-} ${2:-}" in
+  "release manifest")
+    echo '[{"kind":"oci-image","name":"api","version":"0.5.3","digest":"sha256:abc"}]'
+    ;;
+esac
+exit 0

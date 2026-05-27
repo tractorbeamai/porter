@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Mock `porter` for porter-tag bats tests. Emits canned output for the three
+# subcommands tag.sh calls; the matrix/tag list come from env so tests vary
+# them. Logs every invocation to $STUB_LOG.
+set -euo pipefail
+echo "porter $*" >> "$STUB_LOG"
+case "${1:-} ${2:-}" in
+  "release tag") echo "${STUB_TAGS:-}" ;;
+  "matrix --compact") echo "${STUB_MATRIX:-}" ;;
+  "release notes") echo "release notes body" ;;
+esac
+exit 0

@@ -52,7 +52,11 @@ jobs:
       # zizmor-action publishes no `v0` tag; Renovate bumps it.
       - uses: zizmorcore/zizmor-action@5f14fd08f7cf1cb1609c1e344975f152c7ee938d # v0.5.6
 
-  setup-porter-bats:
+  # Lints + unit-tests every composite action's shell. Renamed from the old
+  # `setup-porter-bats` when porter-tag/sign/manifest were added — if a
+  # branch-protection rule still requires `setup-porter-bats`, repoint it at
+  # `action-tests`.
+  action-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -62,14 +66,21 @@ jobs:
       - name: Install bats
         run: sudo apt-get update && sudo apt-get install -y bats
 
-      # Static-check setup.sh before running the unit tests; bats
-      # catches behavioral bugs, shellcheck catches quoting/word-split
-      # bugs the unit tests can't.
-      - name: shellcheck setup.sh
-        run: shellcheck actions/setup-porter/setup.sh
+      # Static-check every action's shell (bodies + test stubs) before the
+      # unit tests; shellcheck catches quoting/word-split bugs the bats
+      # suites can't, bats catches behavioral bugs.
+      - name: shellcheck action scripts
+        run: |
+          shopt -s nullglob
+          files=(actions/*/*.sh actions/*/tests/stubs/*)
+          shellcheck "${files[@]}"
 
-      - name: bats setup.bats
-        run: bats actions/setup-porter/tests/setup.bats
+      - name: bats action suites
+        run: |
+          shopt -s nullglob
+          for d in actions/*/tests; do
+            bats "$d"
+          done
 
   check:
     name: ${{ matrix.task }}

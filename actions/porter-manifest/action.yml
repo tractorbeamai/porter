@@ -1,0 +1,32 @@
+name: porter manifest
+description: |
+  Finalize a porter release: for every tag the release cut, merge the per-row
+  assets the build jobs uploaded into the canonical artifacts on each Release —
+  `checksums.txt` (what `setup-porter` verifies against) and `published.json`
+  (porter's machine-readable manifest of what shipped) — and write a summary
+  table to the job step summary. Idempotent; safe to re-run.
+
+  Prerequisites in the calling job: `setup-porter` has run (porter on PATH); the
+  job grants `contents: write` (Release asset re-uploads).
+author: Tractorbeam
+
+inputs:
+  tags:
+    description: Newline-separated tags to finalize — pass `porter-tag`'s `tags` output.
+    required: true
+  github-token:
+    description: Token for the Release asset download/upload (`gh`).
+    required: false
+    default: ${{ github.token }}
+
+# Logic lives in manifest.sh so it can be unit-tested with bats and checked
+# with shellcheck.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        TAGS: ${{ inputs.tags }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        "$GITHUB_ACTION_PATH/manifest.sh"

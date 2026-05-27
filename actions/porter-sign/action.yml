@@ -1,0 +1,108 @@
+name: porter sign
+description: |
+  Sign + attest a published artifact and emit its publish record, from the
+  *consumer's* own job. Keyless cosign binds the signature to the workflow that
+  runs it, so calling this from your release workflow signs under your repo's
+  identity (not porter's) — the admission policy pins an org-wide SAN, and the
+  porter-issued SLSA predicate (`source = <repo>@<tag>`, `builder = porter`)
+  plus your repo's branch/tag protection carry the real trust. See
+  `docs/signing-and-trust.md`.
+
+  Always emits a `porter release record` and uploads it to the component's
+  Release. When `sign` is `true` (the default) it also `cosign sign`s the
+  artifact and attaches the porter SLSA provenance via `cosign attest`. Unsigned
+  kinds (`npm-package`, `python-wheel`) call this with `sign: 'false'` to record
+  only.
+
+  Prerequisites in the calling job: `setup-porter` has run (porter on PATH);
+  `cosign` is installed (e.g. `sigstore/cosign-installer`) when signing; and the
+  job grants `id-token: write` (keyless OIDC) and `contents: write` (Release
+  upload).
+author: Tractorbeam
+
+inputs:
+  kind:
+    description: Artifact kind — oci-image | helm-chart | cli-binary | npm-package | python-wheel.
+    required: true
+  sign:
+    description: |
+      Whether to cosign-sign + attest. `true` for signable registry/binary
+      artifacts; `false` to record only (npm-package, python-wheel, or any row
+      that opted out of signing). Pass `${{ matrix.sign }}` from a porter matrix.
+    required: false
+    default: "true"
+  name:
+    description: Component id — the artifact's public name (record + cli-binary asset).
+    required: true
+  group:
+    description: Release group the component belongs to.
+    required: true
+  tag:
+    description: Git tag the artifact released under (e.g. `api/v0.5.3`). Pins the predicate source-ref and is the Release to upload to.
+    required: true
+  version:
+    description: Bare version (e.g. `0.5.3`).
+    required: true
+  id:
+    description: Matrix row id — names the per-row `published-<id>.json` record asset.
+    required: true
+  ref:
+    description: |
+      Full signing ref for registry artifacts — `<repo>@<digest>` (e.g.
+      `…/api@sha256:…`). Required for oci-image and helm-chart. The record's
+      digest is parsed from the part after `@`.
+    required: false
+    default: ""
+  registry:
+    description: Registry/repository for the publish record (oci-image, helm-chart, npm-package).
+    required: false
+    default: ""
+  artifact:
+    description: Path to the blob to sign for cli-binary (e.g. `dist/porter-x86_64-unknown-linux-gnu.tar.gz`). Sibling `.sig.bundle`/`.att.bundle` are written next to it.
+    required: false
+    default: ""
+  target:
+    description: Target triple, for cli-binary rows (record + asset name).
+    required: false
+    default: ""
+  sha256:
+    description: Tarball SHA-256 (hex), for cli-binary rows (record).
+    required: false
+    default: ""
+  fulcio-url:
+    description: Fulcio CA URL. Empty uses cosign's default (public Sigstore).
+    required: false
+    default: ""
+  rekor-url:
+    description: Rekor transparency-log URL. Empty uses cosign's default (public Sigstore).
+    required: false
+    default: ""
+  github-token:
+    description: Token for the Release uploads (`gh release upload`).
+    required: false
+    default: ${{ github.token }}
+
+# Logic lives in sign.sh so it can be unit-tested with bats and checked with
+# shellcheck. action.yml only wires inputs → env and invokes the script once.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        KIND: ${{ inputs.kind }}
+        SIGN: ${{ inputs.sign }}
+        NAME: ${{ inputs.name }}
+        GROUP: ${{ inputs.group }}
+        TAG: ${{ inputs.tag }}
+        VERSION: ${{ inputs.version }}
+        ID: ${{ inputs.id }}
+        REF: ${{ inputs.ref }}
+        REGISTRY: ${{ inputs.registry }}
+        ARTIFACT: ${{ inputs.artifact }}
+        TARGET: ${{ inputs.target }}
+        SHA256: ${{ inputs.sha256 }}
+        FULCIO_URL: ${{ inputs.fulcio-url }}
+        REKOR_URL: ${{ inputs.rekor-url }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        "$GITHUB_ACTION_PATH/sign.sh"

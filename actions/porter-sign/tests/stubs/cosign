@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Mock `cosign` for porter-sign bats tests: log the invocation and succeed.
+set -euo pipefail
+echo "cosign $*" >> "$STUB_LOG"
+exit 0
