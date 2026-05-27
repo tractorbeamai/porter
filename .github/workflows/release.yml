@@ -309,6 +309,18 @@ jobs:
           REGISTRY: ${{ matrix.registry }}
         run: |
           set -euo pipefail
+          # `helm package` won't fetch a chart's dependencies; they must be
+          # vendored under charts/ first or packaging fails on any chart with
+          # remote subcharts. Resolve them explicitly (the changesets-#432
+          # lesson: own the prepare step, don't trust the packager to do it).
+          # A committed Chart.lock builds reproducibly from the lock; deps
+          # declared without a lock fall back to update (resolve + fetch);
+          # a dependency-free chart skips both and packages as before.
+          if [[ -f "$CHART/Chart.lock" ]]; then
+            helm dependency build "$CHART"
+          elif grep -q '^dependencies:' "$CHART/Chart.yaml"; then
+            helm dependency update "$CHART"
+          fi
           helm package "$CHART" --version "$VERSION" --app-version "$VERSION" -d dist
           shopt -s nullglob
           pkgs=(dist/*.tgz)
