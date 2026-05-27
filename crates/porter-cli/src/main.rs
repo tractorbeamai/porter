@@ -19,10 +19,10 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use porter_core::{
-    Artifact, AttestInput, BuildOpts, Bump, Changeset, ChangesetSet, Config, append_checksum,
-    apply_next_version, build_cli_binary, build_matrix, build_provenance, build_statement,
-    compute_next_version, current_versions, release_tags, render_for_actions, sha256_hex, slugify,
-    validate_changeset_groups, write_changeset,
+    Artifact, AttestInput, BuildOpts, Bump, Changeset, ChangesetSet, Config, PublishRecord,
+    append_checksum, apply_next_version, build_cli_binary, build_matrix, build_provenance,
+    build_statement, compute_next_version, current_versions, release_tags, render_for_actions,
+    sha256_hex, slugify, validate_changeset_groups, write_changeset,
 };
 
 #[derive(Parser)]
@@ -100,10 +100,60 @@ enum ReleaseCmd {
     Tag(ReleaseTagArgs),
     /// Print the changelog body for the most recent release section.
     Notes(ReleaseNotesArgs),
+    /// Emit one structured JSON publish record for an artifact that shipped.
+    /// The release workflow emits one per row and merges them into a manifest,
+    /// so what shipped is machine-readable rather than scraped from stdout.
+    // Boxed: this variant is far larger than `Tag`/`Notes`, so carrying it
+    // inline would bloat every `ReleaseCmd` value.
+    Record(Box<ReleaseRecordArgs>),
+    /// Merge `porter release record` files into one sorted JSON manifest array.
+    Manifest(ReleaseManifestArgs),
 }
 
 #[derive(Args)]
 struct ReleaseTagArgs;
+
+#[derive(Args)]
+struct ReleaseRecordArgs {
+    /// Artifact kind: oci-image, helm-chart, cli-binary, npm-package, python-wheel.
+    #[arg(long)]
+    kind: String,
+    /// Component id — the artifact's public name.
+    #[arg(long)]
+    name: String,
+    /// Release group the component belongs to.
+    #[arg(long)]
+    group: String,
+    /// Git tag the artifact released under, e.g. `api/v0.5.3`.
+    #[arg(long)]
+    tag: String,
+    /// Bare version, e.g. `0.5.3`.
+    #[arg(long)]
+    version: String,
+    /// Registry/repository published to (oci-image, helm-chart, npm-package).
+    #[arg(long)]
+    registry: Option<String>,
+    /// Content digest (`sha256:…`) for registry artifacts (oci-image, helm-chart).
+    #[arg(long)]
+    digest: Option<String>,
+    /// Target triple, for cli-binary rows.
+    #[arg(long)]
+    target: Option<String>,
+    /// Tarball SHA-256 (hex), for cli-binary rows.
+    #[arg(long)]
+    sha256: Option<String>,
+    /// Release asset filename, when the artifact is a Release asset.
+    #[arg(long)]
+    asset: Option<String>,
+}
+
+#[derive(Args)]
+struct ReleaseManifestArgs {
+    /// Record JSON files to merge — each a single `porter release record`
+    /// object. The merged manifest is sorted by (group, name, target).
+    #[arg(value_name = "FILE", required = true)]
+    files: Vec<PathBuf>,
+}
 
 #[derive(Args)]
 struct ReleaseNotesArgs {
@@ -247,6 +297,8 @@ fn run() -> Result<()> {
         Command::Release(rel) => match rel {
             ReleaseCmd::Tag(_) => cmd_release_tag(&root, &config),
             ReleaseCmd::Notes(args) => cmd_release_notes(&root, &config, args.group.as_deref()),
+            ReleaseCmd::Record(args) => cmd_release_record(*args),
+            ReleaseCmd::Manifest(args) => cmd_release_manifest(&args),
         },
         Command::Matrix(args) => cmd_matrix(&root, &config, &args),
         Command::Build(b) => match b {
@@ -645,6 +697,40 @@ fn cmd_attest(args: AttestArgs) -> Result<()> {
         AttestEmit::Predicate => serde_json::to_string_pretty(&build_provenance(&input)?)?,
     };
     println!("{json}");
+    Ok(())
+}
+
+/// Treat an empty flag value as absent, so a `--digest ""` (passed by the
+/// workflow for a kind that has none) doesn't serialize an empty string.
+fn empty_to_none(s: Option<String>) -> Option<String> {
+    s.filter(|v| !v.is_empty())
+}
+
+fn cmd_release_record(args: ReleaseRecordArgs) -> Result<()> {
+    let record = PublishRecord {
+        kind: args.kind,
+        name: args.name,
+        group: args.group,
+        tag: args.tag,
+        version: args.version,
+        registry: empty_to_none(args.registry),
+        digest: empty_to_none(args.digest),
+        target: empty_to_none(args.target),
+        sha256: empty_to_none(args.sha256),
+        asset: empty_to_none(args.asset),
+    };
+    println!("{}", record.to_json()?);
+    Ok(())
+}
+
+fn cmd_release_manifest(args: &ReleaseManifestArgs) -> Result<()> {
+    let mut records = Vec::with_capacity(args.files.len());
+    for f in &args.files {
+        records
+            .push(std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?);
+    }
+    let merged = porter_core::manifest_from_json(&records)?;
+    println!("{}", serde_json::to_string_pretty(&merged)?);
     Ok(())
 }
 

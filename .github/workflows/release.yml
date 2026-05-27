@@ -247,6 +247,7 @@ jobs:
         run: rustup target add "$TARGET"
 
       - name: Build cli-binary
+        id: build_binary
         if: matrix.kind == 'cli-binary'
         env:
           NAME: ${{ matrix.name }}
@@ -519,6 +520,45 @@ jobs:
           (cd "$WHEEL_PATH" && maturin build --release --out ../dist)
           gh release upload "$TAG" --clobber dist/*.whl
 
+      # ----- publish record ----------------------------------------------
+      # Emit one structured JSON record of what this row shipped (identity +
+      # digest), so the manifest is machine-readable rather than scraped from a
+      # tool's stdout. The digest is whatever the build/push resolved (built
+      # this run or already-published). The publish job merges these per
+      # release. credential: github.token — release-asset upload, not a ref.
+      - name: Emit publish record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ID: ${{ matrix.id }}
+          KIND: ${{ matrix.kind }}
+          NAME: ${{ matrix.name }}
+          GROUP: ${{ matrix.group }}
+          TAG: ${{ matrix.tag }}
+          VERSION: ${{ matrix.version }}
+          REGISTRY: ${{ matrix.registry }}
+          TARGET: ${{ matrix.target }}
+          OCI_DIGEST: ${{ steps.build_image.outputs.digest || steps.build_image_custom.outputs.digest || steps.image_state.outputs.digest }}
+          CHART_REF: ${{ steps.push_chart.outputs.ref || steps.chart_state.outputs.ref }}
+          BINARY_SHA256: ${{ steps.build_binary.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          args=(--kind "$KIND" --name "$NAME" --group "$GROUP" --tag "$TAG" --version "$VERSION")
+          case "$KIND" in
+            oci-image)
+              args+=(--registry "$REGISTRY" --digest "$OCI_DIGEST") ;;
+            helm-chart)
+              # CHART_REF is `<repo>@<digest>`; split out the digest.
+              args+=(--registry "$REGISTRY" --digest "${CHART_REF##*@}") ;;
+            cli-binary)
+              args+=(--target "$TARGET" --sha256 "$BINARY_SHA256" \
+                     --asset "${NAME}-${TARGET}.tar.gz") ;;
+            npm-package)
+              args+=(--registry "$REGISTRY") ;;
+          esac
+          mkdir -p dist
+          porter release record "${args[@]}" > "dist/published-${ID}.json"
+          gh release upload "$TAG" --clobber "dist/published-${ID}.json"
+
   publish:
     needs: [tag, build]
     if: always() && needs.tag.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped')
@@ -529,6 +569,10 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+
+      - uses: tractorbeamai/porter/actions/setup-porter@a0a2f1069f0f34404ace47818b773b75ba5d0a3c # v0
+        with:
+          version: ${{ inputs.porter-version }}
 
       # credential: github.token — downloads/re-uploads release assets; API
       # calls, not ref writes.
@@ -553,4 +597,37 @@ jobs:
             done
             cat "$workdir"/checksums-*.txt | sort -u > "$workdir/checksums.txt"
             gh release upload "$tag" --clobber "$workdir/checksums.txt"
+          done <<< "$TAGS"
+
+      # credential: github.token — downloads/re-uploads release assets; API
+      # calls, not ref writes.
+      - name: Merge publish records into each release manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ needs.tag.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # For each release, pull its per-row published-<id>.json records,
+          # merge them into one sorted published.json manifest (porter owns the
+          # schema + ordering), re-upload it, and summarize what shipped. This
+          # is the machine-readable "what this release shipped" — consumed by
+          # release notes, downstream notifications, and Phase D attestation.
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            names=$(gh release view "$tag" --json assets --jq '.assets[].name' | grep -E '^published-.*\.json$' || true)
+            [[ -z "$names" ]] && continue
+            workdir=$(mktemp -d)
+            for asset in $names; do
+              gh release download "$tag" --pattern "$asset" --dir "$workdir" --clobber
+            done
+            porter release manifest "$workdir"/published-*.json > "$workdir/published.json"
+            gh release upload "$tag" --clobber "$workdir/published.json"
+            {
+              echo "### $tag"
+              echo
+              echo "| kind | name | version | digest / sha256 |"
+              echo "| --- | --- | --- | --- |"
+              jq -r '.[] | "| \(.kind) | \(.name) | \(.version) | \(.digest // .sha256 // "—") |"' "$workdir/published.json"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
           done <<< "$TAGS"

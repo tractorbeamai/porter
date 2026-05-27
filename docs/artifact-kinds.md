@@ -283,6 +283,34 @@ runs (a prior run that pushed but failed to sign completes on re-run).
 `tag` job skips tags the remote already has, so those paths are
 re-runnable too.
 
+## Publish manifest
+
+Every artifact row emits a structured **publish record** — `porter release
+record` writes one JSON object describing exactly what shipped — instead of
+the workflow scraping a tool's human-readable stdout. The publish job merges
+the per-row records for each release into a sorted `published.json` manifest
+(`porter release manifest`) and uploads it as a release asset, and writes a
+summary table to the job step summary.
+
+A record carries the artifact's identity and the content address resolved at
+push time:
+
+```json
+[
+  { "kind": "oci-image", "name": "api", "group": "default",
+    "tag": "api/v0.5.3", "version": "0.5.3",
+    "registry": "…/api", "digest": "sha256:…" },
+  { "kind": "cli-binary", "name": "porter", "group": "default",
+    "tag": "v0.5.3", "version": "0.5.3",
+    "target": "x86_64-unknown-linux-gnu", "sha256": "…",
+    "asset": "porter-x86_64-unknown-linux-gnu.tar.gz" }
+]
+```
+
+Optional fields are omitted when a kind doesn't have them. Downstream
+consumers — Release bodies, notifications, and Phase D attestation — read
+identities and digests from the manifest rather than re-deriving them.
+
 ## `npm-package`
 
 Publish a JavaScript package to a registry via `npm publish`.

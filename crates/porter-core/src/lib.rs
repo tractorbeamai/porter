@@ -54,6 +54,9 @@
 //!   predicate (for `cosign attest`/`attest-blob` to wrap and sign) or a
 //!   complete in-toto v1 Statement. Signing happens in CI via `cosign`;
 //!   this layer owns the reproducible, testable provenance data.
+//! - [`manifest`] — structured publish records (what each artifact shipped:
+//!   tag, version, registry, digest), emitted per row and merged into a
+//!   release manifest, so the workflow never scrapes a tool's stdout.
 //!
 //! # Example
 //!
@@ -95,6 +98,7 @@ pub mod changelog;
 pub mod changeset;
 pub mod config;
 pub mod groups;
+pub mod manifest;
 pub mod matrix;
 pub mod slug;
 pub mod version;
@@ -113,6 +117,7 @@ pub use config::{
     VersionSource,
 };
 pub use groups::validate_changeset_groups;
+pub use manifest::{PublishRecord, manifest, manifest_from_json};
 pub use matrix::{MatrixRow, build_matrix, render_for_actions};
 pub use slug::slugify;
 pub use version::{NextVersion, compute_next_version};
