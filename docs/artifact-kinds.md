@@ -66,12 +66,9 @@ identity, source repo, and invocation metadata a policy verifies — and
 cosign computes the subject digest from the artifact it actually signs.
 
 **Registry auth.** Signing `oci-image`/`helm-chart` writes signatures to
-the registry, so the job needs push credentials. The reusable workflow
-logs in to `ghcr.io` automatically with the workflow token. For any
-other registry (ECR, Docker Hub, …) the reusable workflow can't supply
-credentials generically — your calling workflow must obtain them (e.g.
-`aws-actions/configure-aws-credentials` + `aws ecr get-login-password`
-for ECR). File an issue if you need a first-class hook for this.
+the registry, so the job needs push credentials — declare them on the
+`[registries]` entry's `auth` (see [Registries](#registries)), including
+`aws-ecr` for AWS ECR. The reusable workflow logs in for you.
 
 [cosign]: https://docs.sigstore.dev/cosign/overview/
 [SLSA Build Provenance v1]: https://slsa.dev/spec/v1.0/provenance
@@ -292,16 +289,31 @@ auth = { type = "github-token" }   # GITHUB_TOKEN — the common ghcr.io case
 kind = "oci"
 url  = "docker.io/acme"
 auth = { type = "basic", username_secret = "DH_USER", password_secret = "DH_PAT" }
+
+[registries.ecr]
+kind = "oci"                                                  # oci-helm for charts
+url  = "111122223333.dkr.ecr.us-east-1.amazonaws.com/acme"
+auth = { type = "aws-ecr", role_arn = "arn:aws:iam::111122223333:role/gha", region = "us-east-1" }
 ```
 
-`auth.type` is `none`, `github-token`, `basic` (username/password), or `token`
-(a single bearer token). Credentials are referenced by **secret name**:
-GitHub Actions can't index the `secrets` context by a dynamic key, so the
-release workflow reads them from one `registry-auth` JSON secret —
-`{"DH_USER": "...", "DH_PAT": "..."}` — that the caller passes. `github-token`
-auth needs no `registry-auth` entry (it uses the workflow's token). porter
-validates that a named registry's `kind` matches the artifact that references
-it (an `oci-image` can't point at an `npm` registry).
+`auth.type` is `none`, `github-token`, `basic` (username/password), `token`
+(a single bearer token), or `aws-ecr`. `basic`/`token` credentials are
+referenced by **secret name**: GitHub Actions can't index the `secrets` context
+by a dynamic key, so the release workflow reads them from one `registry-auth`
+JSON secret — `{"DH_USER": "...", "DH_PAT": "..."}` — that the caller passes.
+`github-token` auth needs no `registry-auth` entry (it uses the workflow's
+token).
+
+`aws-ecr` authenticates to AWS ECR via GitHub Actions OIDC — its `role_arn`
+and `region` are **plain values, not secret names**. porter runs
+`aws-actions/configure-aws-credentials` (assuming `role_arn`) then
+`aws ecr get-login-password | docker login` (and `helm registry login` for
+chart rows). The caller's job that invokes the reusable workflow must grant
+`id-token: write` (already required for cosign signing). Valid only on
+`oci`/`oci-helm` registries.
+
+porter validates that a named registry's `kind` matches the artifact that
+references it (an `oci-image` can't point at an `npm` registry).
 
 ## Mixing kinds in one repo
 

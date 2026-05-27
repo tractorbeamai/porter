@@ -51,6 +51,12 @@ pub struct MatrixRow {
     pub password_secret: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_secret: Option<String>,
+    // aws-ecr auth: the IAM role the workflow assumes via OIDC and the region.
+    // Plain values, not secret names (see AuthConfig::AwsEcr).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_arn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
 
     // Common fields surfaced as Option<...> so absent ones serialize to
     // `null` and the workflow can branch on them.
@@ -103,6 +109,8 @@ impl MatrixRow {
             username_secret: None,
             password_secret: None,
             token_secret: None,
+            role_arn: None,
+            region: None,
             registry: None,
             context: None,
             dockerfile: None,
@@ -148,6 +156,11 @@ impl MatrixRow {
             AuthConfig::Token { token_secret } => {
                 self.auth_kind = "token".into();
                 self.token_secret = Some(token_secret.clone());
+            }
+            AuthConfig::AwsEcr { role_arn, region } => {
+                self.auth_kind = "aws-ecr".into();
+                self.role_arn = Some(role_arn.clone());
+                self.region = Some(region.clone());
             }
         }
         self
@@ -437,6 +450,57 @@ mod tests {
         assert_eq!(m[0].registry.as_deref(), Some("ghcr.io/tractorbeamai/api"));
         assert_eq!(m[0].auth_kind, "github-token");
         assert!(m[0].username_secret.is_none());
+    }
+
+    #[test]
+    fn aws_ecr_auth_threads_role_and_region_onto_oci_row() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [registries.ecr]
+            kind = "oci"
+            url = "575108936009.dkr.ecr.us-east-1.amazonaws.com/tractorbeam"
+            auth = { type = "aws-ecr", role_arn = "arn:aws:iam::575108936009:role/gha", region = "us-east-1" }
+
+            [[group]]
+            name = "default"
+            components = [
+              { id = "api", type = "cargo-workspace", path = "Cargo.toml",
+                artifact = { kind = "oci-image", context = ".", dockerfile = "Dockerfile",
+                  registry = "ecr" } },
+            ]
+        "#})
+        .unwrap();
+        let m = build_matrix(&cfg, &versions(&[("default", "1.2.3")]));
+        let row = &m[0];
+        assert_eq!(row.auth_kind, "aws-ecr");
+        assert_eq!(
+            row.role_arn.as_deref(),
+            Some("arn:aws:iam::575108936009:role/gha")
+        );
+        assert_eq!(row.region.as_deref(), Some("us-east-1"));
+        assert!(row.username_secret.is_none() && row.token_secret.is_none());
+    }
+
+    #[test]
+    fn aws_ecr_auth_threads_onto_helm_row() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [registries.ecr-charts]
+            kind = "oci-helm"
+            url = "oci://575108936009.dkr.ecr.us-east-1.amazonaws.com/tractorbeam"
+            auth = { type = "aws-ecr", role_arn = "arn:aws:iam::575108936009:role/gha", region = "us-east-1" }
+
+            [[group]]
+            name = "charts"
+            components = [
+              { id = "platform", type = "helm-chart", path = "Chart.yaml",
+                artifact = { kind = "helm-chart", chart = ".", registry = "ecr-charts" } },
+            ]
+        "#})
+        .unwrap();
+        let m = build_matrix(&cfg, &versions(&[("charts", "1.4.3")]));
+        let row = &m[0];
+        assert_eq!(row.kind, "helm-chart");
+        assert_eq!(row.auth_kind, "aws-ecr");
+        assert_eq!(row.region.as_deref(), Some("us-east-1"));
     }
 
     #[test]

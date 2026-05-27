@@ -175,15 +175,30 @@ jobs:
         uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       # ----- registry login (OCI: oci-image + helm-chart) ----------------
+      # AWS OIDC for aws-ecr registries: mint an sts.amazonaws.com-audience
+      # token from the job's id-token:write (independent of cosign's Sigstore
+      # token) and assume the configured role, so the login step below can run
+      # `aws ecr get-login-password`. Driven by the registry's auth kind alone —
+      # a repo-defined publish command still gets a logged-in context.
+      - name: Configure AWS credentials (aws-ecr)
+        if: (matrix.kind == 'oci-image' || matrix.kind == 'helm-chart') && matrix.auth_kind == 'aws-ecr'
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        with:
+          role-to-assume: ${{ matrix.role_arn }}
+          aws-region: ${{ matrix.region }}
+
       # helm push to an OCI registry reads the same ~/.docker/config.json that
-      # `docker login` writes, so one step covers both kinds. Credentials come
-      # from GITHUB_TOKEN (github-token auth) or the `registry-auth` JSON
-      # secret (basic auth), keyed by the secret names porter put on the row.
+      # `docker login` writes; for ECR we also do an explicit `helm registry
+      # login` (same creds) since helm's OCI client can diverge. Credentials come
+      # from GITHUB_TOKEN (github-token), the `registry-auth` JSON secret (basic),
+      # or `aws ecr get-login-password` (aws-ecr, after the step above).
       - name: Registry login
         if: (matrix.kind == 'oci-image' || matrix.kind == 'helm-chart') && matrix.auth_kind != 'none'
         env:
           AUTH_KIND: ${{ matrix.auth_kind }}
           REGISTRY: ${{ matrix.registry }}
+          KIND: ${{ matrix.kind }}
+          REGION: ${{ matrix.region }}
           ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ github.token }}
           REGISTRY_AUTH: ${{ secrets.registry-auth }}
@@ -200,8 +215,11 @@ jobs:
               user=$(jq -r --arg k "$USERNAME_SECRET" '.[$k] // empty' <<< "$REGISTRY_AUTH")
               pass=$(jq -r --arg k "$PASSWORD_SECRET" '.[$k] // empty' <<< "$REGISTRY_AUTH")
               ;;
+            aws-ecr)
+              # Creds are in the env from the configure-aws-credentials step above.
+              user="AWS"; pass=$(aws ecr get-login-password --region "$REGION") ;;
             *)
-              echo "::error::OCI registry auth_kind '$AUTH_KIND' is unsupported (use github-token or basic)" >&2
+              echo "::error::OCI registry auth_kind '$AUTH_KIND' is unsupported (use github-token, basic, or aws-ecr)" >&2
               exit 1 ;;
           esac
           if [[ -z "$pass" ]]; then
@@ -209,6 +227,9 @@ jobs:
             exit 1
           fi
           echo "$pass" | docker login "$host" -u "$user" --password-stdin
+          if [[ "$KIND" == "helm-chart" ]]; then
+            echo "$pass" | helm registry login "$host" -u "$user" --password-stdin
+          fi
 
       # ----- cli-binary --------------------------------------------------
       - name: Add Rust target
