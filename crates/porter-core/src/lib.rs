@@ -31,7 +31,10 @@
 //!
 //! - [`changeset`] — parse and write `.changeset/*.md` files (semver bump +
 //!   summary, frontmatter compatible with `knope-dev/changesets`).
-//! - [`config`] — load and validate `porter.toml`.
+//! - [`config`] — load and validate `porter.toml` (groups of unified
+//!   components).
+//! - [`groups`] — domain helpers over the group/component model: group
+//!   lookup, a group's version sources and artifacts, and component tags.
 //! - [`versioned_files`] — adapters that read and rewrite the version
 //!   string embedded in concrete file formats (Cargo workspace, Helm
 //!   chart, package.json, generic regex).
@@ -45,8 +48,8 @@
 //!   changesets.
 //! - [`build`] — cross-compile a CLI binary, tar-gzip it, and write a
 //!   BSD-format SHA-256 line into `dist/checksums.txt`.
-//! - [`matrix`] — fan `[[artifacts]]` entries out into a GitHub Actions
-//!   `strategy.matrix.include` array.
+//! - [`matrix`] — fan each group's artifact-bearing components out into a
+//!   GitHub Actions `strategy.matrix.include` array.
 //! - [`attest`] — build SLSA Build Provenance v1, either as a bare
 //!   predicate (for `cosign attest`/`attest-blob` to wrap and sign) or a
 //!   complete in-toto v1 Statement. Signing happens in CI via `cosign`;
@@ -54,11 +57,11 @@
 //!
 //! # Example
 //!
-//! Compute the next version a `porter version` invocation would produce,
-//! without writing anything:
+//! Compute the next version each group would move to, without writing
+//! anything:
 //!
 //! ```no_run
-//! use porter_core::{Config, ChangesetSet, current_version, compute_next_version};
+//! use porter_core::{Config, ChangesetSet, current_versions, compute_next_version};
 //! use std::path::Path;
 //!
 //! # fn main() -> anyhow::Result<()> {
@@ -67,9 +70,10 @@
 //!     .ok_or_else(|| anyhow::anyhow!("no porter.toml found"))?;
 //! let config = Config::load(&config_path)?;
 //! let set = ChangesetSet::load_from_dir(&root.join(&config.changesets.directory))?;
-//! let current = current_version(root, &config)?;
-//! if let Some(next) = compute_next_version(&current, &set)? {
-//!     println!("{} -> {}", next.previous, next.next);
+//! for (group, current) in current_versions(root, &config)? {
+//!     if let Some(next) = compute_next_version(&current, &set.for_group(&group))? {
+//!         println!("{group}: {} -> {}", next.previous, next.next);
+//!     }
 //! }
 //! # Ok(())
 //! # }
@@ -90,17 +94,25 @@ pub mod build;
 pub mod changelog;
 pub mod changeset;
 pub mod config;
+pub mod groups;
 pub mod matrix;
 pub mod slug;
 pub mod version;
 pub mod versioned_files;
 
-pub use apply::{ApplyResult, apply_next_version, current_version};
+pub use apply::{
+    ApplyResult, GroupApply, apply_next_version, current_versions, group_current_version,
+    release_tags,
+};
 pub use attest::{AttestInput, Statement, build_provenance, build_statement, sha256_hex};
 pub use build::{BuildArtifact, BuildOpts, append_checksum, build_cli_binary};
 pub use changelog::{prepend_section, render_section, today_utc};
 pub use changeset::{Bump, Changeset, ChangesetSet, write_changeset};
-pub use config::{ArtifactConfig, ChangesetMode, Config, SigningBackend, VersionedFileSpec};
+pub use config::{
+    Artifact, AuthConfig, Component, Config, Group, Registry, RegistryKind, SigningBackend,
+    VersionSource,
+};
+pub use groups::validate_changeset_groups;
 pub use matrix::{MatrixRow, build_matrix, render_for_actions};
 pub use slug::slugify;
 pub use version::{NextVersion, compute_next_version};

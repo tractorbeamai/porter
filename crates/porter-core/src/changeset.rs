@@ -32,6 +32,10 @@ pub struct Changeset {
     pub path: PathBuf,
     pub bump: Bump,
     pub summary: String,
+    /// Groups this change bumps. Empty means "the sole group" — only valid
+    /// when the repo has exactly one group (enforced by
+    /// [`crate::groups::validate_changeset_groups`]).
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -78,6 +82,20 @@ impl ChangesetSet {
         self.changesets.iter().map(|c| c.bump).reduce(Ord::max)
     }
 
+    /// The subset of changesets targeting `group`. A changeset with no
+    /// explicit `groups:` belongs to whichever single group exists, so it
+    /// matches any name (only reachable when there's one group).
+    #[must_use]
+    pub fn for_group(&self, group: &str) -> Self {
+        let changesets = self
+            .changesets
+            .iter()
+            .filter(|c| c.groups.is_empty() || c.groups.iter().any(|g| g == group))
+            .cloned()
+            .collect();
+        Self { changesets }
+    }
+
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.changesets.is_empty()
@@ -95,6 +113,8 @@ struct Frontmatter {
     release: Option<String>,
     #[serde(rename = "bump")]
     bump: Option<String>,
+    #[serde(default)]
+    groups: Option<Vec<String>>,
 }
 
 fn parse_changeset(path: &Path, body: &str) -> Result<Changeset> {
@@ -121,20 +141,34 @@ fn parse_changeset(path: &Path, body: &str) -> Result<Changeset> {
         path: path.to_path_buf(),
         bump,
         summary,
+        groups: fm.groups.unwrap_or_default(),
     })
 }
 
-/// Write a new changeset Markdown file at `<dir>/<slug>.md`.
+/// Write a new changeset Markdown file at `<dir>/<slug>.md`. `groups` lists
+/// the release lines this change bumps; an empty slice omits the `groups:`
+/// key (valid only in single-group repos).
 ///
 /// # Errors
 ///
 /// Returns an error if `dir` cannot be created or the file cannot be
 /// written.
-pub fn write_changeset(dir: &Path, slug: &str, bump: Bump, summary: &str) -> Result<PathBuf> {
+pub fn write_changeset(
+    dir: &Path,
+    slug: &str,
+    bump: Bump,
+    groups: &[String],
+    summary: &str,
+) -> Result<PathBuf> {
     fs::create_dir_all(dir).with_context(|| format!("creating changeset dir {}", dir.display()))?;
     let path = dir.join(format!("{slug}.md"));
+    let groups_line = if groups.is_empty() {
+        String::new()
+    } else {
+        format!("groups: [{}]\n", groups.join(", "))
+    };
     let body = format!(
-        "---\nbump: {bump}\n---\n\n{summary}\n",
+        "---\nbump: {bump}\n{groups_line}---\n\n{summary}\n",
         bump = bump.as_str(),
         summary = summary.trim()
     );
@@ -231,12 +265,61 @@ mod tests {
     #[test]
     fn writes_and_roundtrips() {
         let dir = TempDir::new().unwrap();
-        let p =
-            write_changeset(dir.path(), "neat-feature", Bump::Minor, "Add neat feature.").unwrap();
+        let p = write_changeset(
+            dir.path(),
+            "neat-feature",
+            Bump::Minor,
+            &[],
+            "Add neat feature.",
+        )
+        .unwrap();
         let set = ChangesetSet::load_from_dir(dir.path()).unwrap();
         assert_eq!(set.len(), 1);
         assert_eq!(set.changesets[0].bump, Bump::Minor);
         assert_eq!(set.changesets[0].summary, "Add neat feature.");
         assert_eq!(set.changesets[0].path, p);
+        assert!(set.changesets[0].groups.is_empty());
+    }
+
+    #[test]
+    fn writes_and_roundtrips_with_groups() {
+        let dir = TempDir::new().unwrap();
+        write_changeset(
+            dir.path(),
+            "sdk-feature",
+            Bump::Minor,
+            &["sdk".to_owned(), "charts".to_owned()],
+            "Add SDK feature.",
+        )
+        .unwrap();
+        let set = ChangesetSet::load_from_dir(dir.path()).unwrap();
+        assert_eq!(set.changesets[0].groups, vec!["sdk", "charts"]);
+    }
+
+    #[test]
+    fn for_group_filters_by_target() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("a.md"),
+            "---\nbump: minor\ngroups: [sdk]\n---\n\nsdk\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("b.md"),
+            "---\nbump: patch\ngroups: [charts]\n---\n\ncharts\n",
+        )
+        .unwrap();
+        let set = ChangesetSet::load_from_dir(dir.path()).unwrap();
+        assert_eq!(set.for_group("sdk").len(), 1);
+        assert_eq!(set.for_group("sdk").aggregate_bump(), Some(Bump::Minor));
+        assert_eq!(set.for_group("charts").aggregate_bump(), Some(Bump::Patch));
+    }
+
+    #[test]
+    fn empty_groups_changeset_matches_any_group() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.md"), "---\nbump: minor\n---\n\nx\n").unwrap();
+        let set = ChangesetSet::load_from_dir(dir.path()).unwrap();
+        assert_eq!(set.for_group("whatever").len(), 1);
     }
 }

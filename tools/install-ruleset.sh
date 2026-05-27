@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Install (or update) the repository ruleset that makes the porter App
-# the sole identity allowed to push `v*` tag refs. Idempotent: looks up
-# any existing ruleset named "porter-tag-protection" and PUTs to it,
-# otherwise POSTs a new one.
+# the sole identity allowed to push porter's version tags. Idempotent:
+# looks up any existing ruleset named "porter-tag-protection" and PUTs to
+# it, otherwise POSTs a new one.
+#
+# Tag patterns: porter cuts one tag per published component. The default
+# stem is `<id>/v` (e.g. `py-sdk/v0.4.1`), and a component may override it
+# to bare `v` (e.g. `v0.1.0`). The two include patterns below cover both.
+# A custom `tag_prefix` that matches neither needs its own pattern added.
 #
 # Required environment:
 #   GH_TOKEN         — token with admin on the target repo
@@ -38,7 +43,7 @@ read -r -d '' BODY <<JSON || true
   ],
   "conditions": {
     "ref_name": {
-      "include": ["refs/tags/v*"],
+      "include": ["refs/tags/v*", "refs/tags/*/v*"],
       "exclude": []
     }
   },

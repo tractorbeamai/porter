@@ -19,10 +19,10 @@ use std::process::ExitCode;
 use anyhow::{Context as _, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use porter_core::{
-    AttestInput, BuildOpts, Bump, Changeset, ChangesetSet, Config, append_checksum,
+    Artifact, AttestInput, BuildOpts, Bump, Changeset, ChangesetSet, Config, append_checksum,
     apply_next_version, build_cli_binary, build_matrix, build_provenance, build_statement,
-    compute_next_version, current_version, render_for_actions, sha256_hex, slugify,
-    write_changeset,
+    compute_next_version, current_versions, release_tags, render_for_actions, sha256_hex, slugify,
+    validate_changeset_groups, write_changeset,
 };
 
 #[derive(Parser)]
@@ -53,7 +53,7 @@ enum Command {
     /// Cut a release: tag, build artifacts, push, and create the GitHub Release.
     #[command(subcommand)]
     Release(ReleaseCmd),
-    /// Emit the GitHub Actions job matrix derived from `[[artifacts]]`.
+    /// Emit the GitHub Actions job matrix of every group's artifacts.
     Matrix(MatrixArgs),
     /// Build a release artifact (currently `cli-binary` is implemented).
     #[command(subcommand)]
@@ -68,6 +68,10 @@ struct AddArgs {
     /// Bump kind. If omitted, prompts.
     #[arg(long, value_enum)]
     bump: Option<BumpArg>,
+    /// Group this change bumps; repeatable. Optional when the repo has a
+    /// single group; required (or prompted) otherwise.
+    #[arg(long = "group", value_name = "GROUP")]
+    groups: Vec<String>,
     /// One-line summary. If omitted, reads from stdin or prompts.
     #[arg(long)]
     summary: Option<String>,
@@ -102,13 +106,21 @@ enum ReleaseCmd {
 struct ReleaseTagArgs;
 
 #[derive(Args)]
-struct ReleaseNotesArgs;
+struct ReleaseNotesArgs {
+    /// Read the named group's changelog instead of the repo-wide default.
+    /// Each group's release gets its own notes.
+    #[arg(long)]
+    group: Option<String>,
+}
 
 #[derive(Args)]
 struct MatrixArgs {
     /// Filter to a specific artifact kind (e.g. `oci-image`, `cli-binary`).
     #[arg(long)]
     kind: Option<String>,
+    /// Filter to a specific group.
+    #[arg(long)]
+    group: Option<String>,
     /// Print compact JSON instead of pretty-printed.
     #[arg(long)]
     compact: bool,
@@ -172,14 +184,14 @@ struct AttestArgs {
 
 #[derive(Args)]
 struct BuildCliBinaryArgs {
-    /// `[[artifacts]]` `name` to look up. Defaults to the only entry if
-    /// there's exactly one.
+    /// Component id of the `cli-binary` artifact to build. Defaults to the
+    /// only one if there's exactly one across all groups.
     #[arg(long)]
     name: Option<String>,
-    /// Override the `[[artifacts]].package` value.
+    /// Override the artifact's cargo `package` value.
     #[arg(long)]
     package: Option<String>,
-    /// Override the binary name. Defaults to the artifact `name`.
+    /// Override the binary name. Defaults to the component id.
     #[arg(long)]
     binary: Option<String>,
     /// Rust target triple (e.g. `x86_64-unknown-linux-gnu`).
@@ -234,9 +246,9 @@ fn run() -> Result<()> {
         Command::Version(args) => cmd_version(&root, &config, &args),
         Command::Release(rel) => match rel {
             ReleaseCmd::Tag(_) => cmd_release_tag(&root, &config),
-            ReleaseCmd::Notes(_) => cmd_release_notes(&root, &config),
+            ReleaseCmd::Notes(args) => cmd_release_notes(&root, &config, args.group.as_deref()),
         },
-        Command::Matrix(args) => cmd_matrix(&config, &args),
+        Command::Matrix(args) => cmd_matrix(&root, &config, &args),
         Command::Build(b) => match b {
             BuildCmd::CliBinary(args) => cmd_build_cli_binary(&root, &config, args),
         },
@@ -265,6 +277,7 @@ fn cmd_add(root: &Path, config: &Config, args: AddArgs) -> Result<()> {
         Some(b) => Bump::from(b),
         None => prompt_bump()?,
     };
+    let groups = resolve_add_groups(config, args.groups)?;
     let summary = match args.summary {
         Some(s) => s,
         None => prompt_summary()?,
@@ -275,47 +288,143 @@ fn cmd_add(root: &Path, config: &Config, args: AddArgs) -> Result<()> {
     }
     let slug = args.slug.unwrap_or_else(|| slugify(&summary));
     let dir = root.join(&config.changesets.directory);
-    let path = write_changeset(&dir, &slug, bump, &summary)?;
+    let path = write_changeset(&dir, &slug, bump, &groups, &summary)?;
     let rel = path.strip_prefix(root).unwrap_or(&path);
     println!("wrote {}", rel.display());
     Ok(())
 }
 
+/// Decide which groups a new changeset targets. With one group the selection
+/// is implicit (empty); with several, the flags must name existing groups, or
+/// we prompt on a tty.
+fn resolve_add_groups(config: &Config, requested: Vec<String>) -> Result<Vec<String>> {
+    let known: Vec<&str> = config.groups.iter().map(|g| g.name.as_str()).collect();
+    if !requested.is_empty() {
+        for g in &requested {
+            if config.group(g).is_none() {
+                bail!("unknown group {g:?} (groups: {})", known.join(", "));
+            }
+        }
+        return Ok(requested);
+    }
+    if config.groups.len() == 1 {
+        // Single group: the changeset belongs to it implicitly.
+        return Ok(Vec::new());
+    }
+    if !io::stdin().is_terminal() {
+        bail!(
+            "--group is required when the repo has multiple groups (groups: {})",
+            known.join(", ")
+        );
+    }
+    eprint!("group(s), comma-separated [{}]: ", known.join(", "));
+    io::stderr().flush()?;
+    let mut s = String::new();
+    io::stdin().read_line(&mut s)?;
+    let chosen: Vec<String> = s
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if chosen.is_empty() {
+        bail!("no group selected");
+    }
+    for g in &chosen {
+        if config.group(g).is_none() {
+            bail!("unknown group {g:?} (groups: {})", known.join(", "));
+        }
+    }
+    Ok(chosen)
+}
+
+/// One group's view in `porter status`: its current/next version, the
+/// changesets that bump it, and the tags it would cut.
+struct GroupStatus<'a> {
+    name: &'a str,
+    current: String,
+    next: Option<porter_core::NextVersion>,
+    set: ChangesetSet,
+    tags: Vec<String>,
+}
+
 fn cmd_status(root: &Path, config: &Config, args: &StatusArgs) -> Result<()> {
     let dir = root.join(&config.changesets.directory);
     let set = ChangesetSet::load_from_dir(&dir)?;
-    let current = current_version(root, config)?;
-    let next = compute_next_version(&current, &set)?;
+    validate_changeset_groups(config, &set)?;
+    let currents = current_versions(root, config)?;
+
+    // Per-group view: each group's current/next version, the changesets that
+    // bump it, and the tags it would cut.
+    let mut statuses = Vec::new();
+    for group in &config.groups {
+        let current = &currents[&group.name];
+        let gset = set.for_group(&group.name);
+        let next = compute_next_version(current, &gset)?;
+        let tags = next.as_ref().map_or_else(Vec::new, |n| {
+            group
+                .artifact_components()
+                .map(|c| c.tag(&n.next))
+                .collect()
+        });
+        statuses.push(GroupStatus {
+            name: &group.name,
+            current: current.to_string(),
+            next,
+            set: gset,
+            tags,
+        });
+    }
+
+    // The rolling Version PR title: a single version reads from the lone
+    // bumped group; several bumping groups have no single version.
+    let bumped: Vec<&GroupStatus<'_>> = statuses.iter().filter(|s| s.next.is_some()).collect();
+    let pr_title = match bumped.as_slice() {
+        [] => None,
+        [only] => only
+            .next
+            .as_ref()
+            .map(|n| config.release.render_pr_title(&n.next.to_string())),
+        _ => Some(config.release.render_pr_title_multi()),
+    };
 
     if args.json {
+        let groups_json: Vec<_> = statuses
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "current": s.current,
+                    "next": s.next.as_ref().map(|n| n.next.to_string()),
+                    "bump": s.next.as_ref().map(|n| n.bump.as_str()),
+                    "tags": s.tags,
+                    "changesets": s.set.changesets.iter().map(format_changeset_json).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
         let payload = serde_json::json!({
-            "current": current.to_string(),
-            "next": next.as_ref().map(|n| n.next.to_string()),
-            "bump": next.as_ref().map(|n| n.bump.as_str()),
-            // Rendered rolling Version PR title for the next version (null when
-            // there's nothing to release). version.yml consumes this so the
-            // title/commit subject is configured in porter.toml, not the workflow.
-            "pr_title": next
-                .as_ref()
-                .map(|n| config.release.render_pr_title(&n.next.to_string())),
-            "changesets": set.changesets.iter().map(format_changeset_json).collect::<Vec<_>>(),
+            "groups": groups_json,
+            // version.yml consumes this so the title/commit subject is
+            // configured in porter.toml, not the workflow. Null when nothing
+            // is releasable.
+            "pr_title": pr_title,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
         return Ok(());
     }
 
-    println!("current version: {current}");
-    if let Some(n) = next {
-        println!("next version:    {} ({})", n.next, n.bump.as_str());
-    } else {
-        println!("next version:    (none — no pending changesets)");
-    }
-    println!();
-    if set.is_empty() {
-        println!("no pending changesets");
-    } else {
-        println!("{} pending changeset(s):", set.len());
-        for c in &set.changesets {
+    for s in &statuses {
+        match &s.next {
+            Some(n) => println!(
+                "{}: {} -> {} ({})",
+                s.name,
+                s.current,
+                n.next,
+                n.bump.as_str()
+            ),
+            None => println!("{}: {} (no pending changesets)", s.name, s.current),
+        }
+        for c in &s.set.changesets {
             let rel = c.path.strip_prefix(root).unwrap_or(&c.path);
             let first_line = c.summary.lines().next().unwrap_or("");
             println!(
@@ -334,6 +443,7 @@ fn format_changeset_json(c: &Changeset) -> serde_json::Value {
         "path": c.path,
         "bump": c.bump.as_str(),
         "summary": c.summary,
+        "groups": c.groups,
     })
 }
 
@@ -343,70 +453,72 @@ fn cmd_version(root: &Path, config: &Config, args: &VersionArgs) -> Result<()> {
         println!("no pending changesets — nothing to do");
         return Ok(());
     };
-    if args.dry_run {
+    let verb = if args.dry_run { "would bump" } else { "bumped" };
+    for g in &r.groups {
         println!(
-            "would bump {} -> {} ({})",
-            r.next.previous,
-            r.next.next,
-            r.next.bump.as_str()
+            "{verb} {}: {} -> {} ({})",
+            g.group,
+            g.next.previous,
+            g.next.next,
+            g.next.bump.as_str()
         );
-        println!("would rewrite:");
-        for p in &r.rewritten_files {
+        for p in &g.rewritten_files {
             let rel = p.strip_prefix(root).unwrap_or(p);
             println!("  {}", rel.display());
         }
-        println!("would prepend section to {}", r.changelog_path.display());
-        println!(
-            "would consume {} changeset file(s)",
-            r.consumed_changesets.len()
-        );
+        if !g.tags.is_empty() {
+            println!("  tags: {}", g.tags.join(", "));
+        }
+    }
+    let action = if args.dry_run {
+        "would consume"
     } else {
-        println!(
-            "bumped {} -> {} ({})",
-            r.next.previous,
-            r.next.next,
-            r.next.bump.as_str()
-        );
-        println!("rewrote {} file(s):", r.rewritten_files.len());
-        for p in &r.rewritten_files {
-            let rel = p.strip_prefix(root).unwrap_or(p);
-            println!("  {}", rel.display());
-        }
-        println!(
-            "wrote {} and removed {} changeset file(s)",
-            r.changelog_path.display(),
-            r.consumed_changesets.len()
-        );
+        "consumed"
+    };
+    println!("{action} {} changeset file(s)", r.consumed_changesets.len());
 
-        if let Ok(summary_path) = std::env::var("GITHUB_STEP_SUMMARY") {
-            let mut f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&summary_path)?;
+    if !args.dry_run
+        && let Ok(summary_path) = std::env::var("GITHUB_STEP_SUMMARY")
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&summary_path)?;
+        writeln!(f, "## porter version\n")?;
+        for g in &r.groups {
             writeln!(
                 f,
-                "## porter version\n\n- **{} → {}** ({})\n- {} files rewritten\n- {} changesets consumed",
-                r.next.previous,
-                r.next.next,
-                r.next.bump.as_str(),
-                r.rewritten_files.len(),
-                r.consumed_changesets.len()
+                "- **{}: {} → {}** ({}, {} file(s))",
+                g.group,
+                g.next.previous,
+                g.next.next,
+                g.next.bump.as_str(),
+                g.rewritten_files.len()
             )?;
         }
+        writeln!(f, "- {} changesets consumed", r.consumed_changesets.len())?;
     }
     Ok(())
 }
 
 fn cmd_release_tag(root: &Path, config: &Config) -> Result<()> {
-    let v = current_version(root, config)?;
-    println!("{}{}", config.release.tag_prefix, v);
+    // One tag per published component across every group, at each group's
+    // current version. The workflow pushes the ones that don't already exist,
+    // so unchanged groups are naturally skipped.
+    for tag in release_tags(root, config)? {
+        println!("{tag}");
+    }
     Ok(())
 }
 
-fn cmd_matrix(config: &Config, args: &MatrixArgs) -> Result<()> {
-    let mut rows = build_matrix(config);
+fn cmd_matrix(root: &Path, config: &Config, args: &MatrixArgs) -> Result<()> {
+    let versions = current_versions(root, config)?;
+    let mut rows = build_matrix(config, &versions);
     if let Some(kind) = args.kind.as_deref() {
         rows.retain(|r| r.kind == kind);
+    }
+    if let Some(group) = args.group.as_deref() {
+        rows.retain(|r| r.group == group);
     }
     let value = render_for_actions(&rows);
     let body = if args.compact {
@@ -419,23 +531,16 @@ fn cmd_matrix(config: &Config, args: &MatrixArgs) -> Result<()> {
 }
 
 fn cmd_build_cli_binary(root: &Path, config: &Config, args: BuildCliBinaryArgs) -> Result<()> {
-    use porter_core::ArtifactConfig;
-    // Find the matching `[[artifacts]]` block. If neither --name nor a
-    // single cli-binary entry can identify it, error out — we don't want
-    // to silently build the wrong target.
-    let cli_binaries: Vec<_> = config
-        .artifacts
+    // Find the matching cli-binary component by id across every group. If
+    // neither --name nor a single cli-binary can identify it, error out — we
+    // don't want to silently build the wrong target.
+    let cli_binaries: Vec<(&str, &str)> = config
+        .groups
         .iter()
-        .filter_map(|a| match a {
-            ArtifactConfig::CliBinary {
-                name,
-                package,
-                targets,
-            } => Some((name.clone(), package.clone(), targets.clone())),
-            ArtifactConfig::OciImage { .. }
-            | ArtifactConfig::HelmChart { .. }
-            | ArtifactConfig::NpmPackage { .. }
-            | ArtifactConfig::PythonWheel { .. } => None,
+        .flat_map(|g| &g.components)
+        .filter_map(|c| match c.artifact() {
+            Some(Artifact::CliBinary { package, .. }) => Some((c.id.as_str(), package.as_str())),
+            _ => None,
         })
         .collect();
 
@@ -443,15 +548,15 @@ fn cmd_build_cli_binary(root: &Path, config: &Config, args: BuildCliBinaryArgs) 
         Some(n) => {
             let m = cli_binaries
                 .iter()
-                .find(|(name, _, _)| name == &n)
-                .with_context(|| format!("no [[artifacts]] cli-binary named {n:?}"))?;
-            (m.0.clone(), m.1.clone())
+                .find(|(id, _)| *id == n)
+                .with_context(|| format!("no cli-binary component with id {n:?}"))?;
+            (m.0.to_owned(), m.1.to_owned())
         }
         None => match cli_binaries.as_slice() {
-            [] => bail!("porter.toml has no [[artifacts]] of kind cli-binary"),
-            [only] => (only.0.clone(), only.1.clone()),
+            [] => bail!("porter.toml has no component with a cli-binary artifact"),
+            [only] => (only.0.to_owned(), only.1.to_owned()),
             _ => {
-                bail!("porter.toml has multiple cli-binary artifacts; pass --name to disambiguate")
+                bail!("porter.toml has multiple cli-binary components; pass --name to disambiguate")
             }
         },
     };
@@ -543,8 +648,19 @@ fn cmd_attest(args: AttestArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_release_notes(root: &Path, config: &Config) -> Result<()> {
-    let cl_path = root.join(&config.release.changelog);
+fn cmd_release_notes(root: &Path, config: &Config, group: Option<&str>) -> Result<()> {
+    // Notes come from the named group's changelog (each group's release gets
+    // its own), or the repo-wide default when no group is given.
+    let changelog = match group {
+        Some(name) => {
+            let g = config
+                .group(name)
+                .with_context(|| format!("unknown group {name:?}"))?;
+            g.changelog_path(&config.release).to_path_buf()
+        }
+        None => config.release.changelog.clone(),
+    };
+    let cl_path = root.join(&changelog);
     let body = std::fs::read_to_string(&cl_path)
         .with_context(|| format!("reading changelog {}", cl_path.display()))?;
     let section = first_section(&body).context("no release section found in changelog")?;

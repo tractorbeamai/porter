@@ -22,7 +22,7 @@ If you need to force it without a real commit, re-run the latest
 `version.yml` workflow from the Actions tab — the workflow is idempotent
 and will rewrite the branch.
 
-If the conflict is structural (e.g., a `[[versioned_files]]` entry
+If the conflict is structural (e.g., a component's version source
 referenced a file that's been deleted), fix the structural issue on
 main first, then let the rolling PR refresh.
 

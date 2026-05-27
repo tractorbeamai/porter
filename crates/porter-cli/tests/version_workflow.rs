@@ -3,16 +3,15 @@
 // The version.yml reusable workflow does:
 //
 //   status_json=$(porter status --json)
-//   next=$(echo "$status_json" | jq -r '.next // empty')
-//   if [[ -z "$next" || "$next" == "null" ]]; then
+//   pr_title=$(echo "$status_json" | jq -r '.pr_title // empty')
+//   if [[ -z "$pr_title" || "$pr_title" == "null" ]]; then
 //     echo "skip"
 //   fi
 //
-// These tests pin the contract that `porter status --json` produces
-// JSON whose `.next` field can be extracted by `jq -r '.next //
-// empty'` and consumed by the `[[ -z "$next" ]]` skip check. If
-// porter's status JSON ever drifts in a way that breaks this idiom,
-// these tests fail before the reusable workflow does.
+// With groups, there's no single top-level `.next` (each group has its own
+// under `.groups[]`), so `.pr_title` is the release/skip signal: it's null
+// exactly when no group has pending changesets. These tests pin that contract
+// plus the per-group `.groups[].next`/`.bump` shape.
 
 // Integration tests live in their own crate and don't inherit the
 // `cfg_attr(test, ...)` allows from the binary.
@@ -42,13 +41,11 @@ fn fixture(with_changeset: bool) -> TempDir {
             [changesets]
             directory = ".changeset"
 
-            [[versioned_files]]
-            type = "cargo-workspace"
-            path = "Cargo.toml"
-
-            [release]
-            tag_prefix = "v"
-            changelog = "CHANGELOG.md"
+            [[group]]
+            name = "default"
+            components = [
+              { id = "porter", type = "cargo-workspace", path = "Cargo.toml", tag_prefix = "v" },
+            ]
         "#},
     )
     .unwrap();
@@ -133,7 +130,7 @@ fn jq_extracts_next_when_changesets_present() {
     let Some(jq) = jq_or_skip() else { return };
     let dir = fixture(true);
     let json = status_json(&dir);
-    let next = pipe_through_jq(&jq, &json, ".next // empty");
+    let next = pipe_through_jq(&jq, &json, ".groups[0].next // empty");
     assert!(
         !next.is_empty() && next != "null",
         "expected a non-empty, non-null next; got {next:?}"
@@ -151,13 +148,12 @@ fn jq_yields_empty_when_no_changesets() {
     let Some(jq) = jq_or_skip() else { return };
     let dir = fixture(false);
     let json = status_json(&dir);
-    let next = pipe_through_jq(&jq, &json, ".next // empty");
-    // version.yml then runs `[[ -z "$next" || "$next" == "null" ]]`
-    // to decide whether to skip; both empty-string and "null" trigger
-    // the skip path.
+    let next = pipe_through_jq(&jq, &json, ".groups[0].next // empty");
+    // With no changesets a group's `.next` is null; `// empty` coalesces it
+    // to '' so the per-group view reads cleanly.
     assert!(
         next.is_empty(),
-        "expected `.next // empty` to coalesce a null/missing field to '', got {next:?}"
+        "expected `.groups[0].next // empty` to coalesce null to '', got {next:?}"
     );
 }
 
@@ -168,7 +164,7 @@ fn bump_field_matches_jq_extraction() {
     let Some(jq) = jq_or_skip() else { return };
     let dir = fixture(true);
     let json = status_json(&dir);
-    let bump = pipe_through_jq(&jq, &json, ".bump // empty");
+    let bump = pipe_through_jq(&jq, &json, ".groups[0].bump // empty");
     assert!(
         matches!(bump.as_str(), "patch" | "minor" | "major"),
         "unexpected bump string: {bump:?}"
@@ -182,7 +178,7 @@ fn pr_title_rendered_from_default_template() {
     let Some(jq) = jq_or_skip() else { return };
     let dir = fixture(true);
     let json = status_json(&dir);
-    let next = pipe_through_jq(&jq, &json, ".next // empty");
+    let next = pipe_through_jq(&jq, &json, ".groups[0].next // empty");
     let pr_title = pipe_through_jq(&jq, &json, ".pr_title // empty");
     assert_eq!(pr_title, format!("Version Packages: {next}"));
 }

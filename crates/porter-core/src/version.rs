@@ -13,13 +13,16 @@ pub struct NextVersion {
 
 /// Compute the next version given the current version and a set of changesets.
 ///
+/// This is per-release-line: callers pass one group's current version and
+/// that group's changesets (via [`ChangesetSet::for_group`]) to bump each
+/// group independently.
+///
 /// Returns `None` if the changeset set is empty (no bump).
 ///
 /// # Errors
 ///
-/// Currently infallible; the `Result` is reserved for future bump
-/// strategies (e.g. independent-mode aggregation that can detect
-/// conflicting bumps).
+/// Currently infallible; the `Result` is kept for forward compatibility with
+/// bump strategies that can fail.
 pub fn compute_next_version(current: &Version, set: &ChangesetSet) -> Result<Option<NextVersion>> {
     let Some(bump) = set.aggregate_bump() else {
         return Ok(None);
@@ -70,6 +73,7 @@ mod tests {
             path: PathBuf::from("a.md"),
             bump,
             summary: String::new(),
+            groups: Vec::new(),
         }
     }
 

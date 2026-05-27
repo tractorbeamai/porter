@@ -122,6 +122,7 @@ mod tests {
             path: PathBuf::from("x.md"),
             bump,
             summary: summary.into(),
+            groups: Vec::new(),
         }
     }
 

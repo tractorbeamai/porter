@@ -1,13 +1,14 @@
 # Artifact kinds
 
-Each entry in `[[artifacts]]` declares one publishable output. porter
-expands the entries into a GitHub Actions job matrix at release time;
-the reusable [release.yml](../.github/workflows/release.yml) consumes
-that matrix and dispatches one job per row to the right step block.
+A component's `artifact` declares one publishable output. porter expands
+every group's artifact-bearing components into a GitHub Actions job matrix at
+release time; the reusable [release.yml](../.github/workflows/release.yml)
+consumes that matrix and dispatches one job per row to the right step block.
 
-This page documents each kind: the porter.toml fields, the runner the
-matrix row lands on, the workflow steps that act on it, and what's
-implemented today.
+This page documents each kind: the `artifact` fields, the runner the matrix
+row lands on, the workflow steps that act on it, and what's implemented today.
+The component `id` supplies the artifact's name (there's no `name` field), and
+the published tag is the component's tag (`<id>/v<version>`).
 
 ## Implementation status
 
@@ -84,17 +85,21 @@ Release. The `setup-porter` action (and any analogue you write for
 your tool) consumes the checksum file to verify downloads.
 
 ```toml
-[[artifacts]]
-kind = "cli-binary"
-name = "porter"          # appears in the asset filename and matrix id
-package = "porter-cli"   # cargo package name
-targets = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
+[[group]]
+name = "default"
+components = [
+  { id = "porter", type = "cargo-workspace", path = "Cargo.toml", tag_prefix = "v",
+    artifact = { kind = "cli-binary", package = "porter-cli", targets = [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+    ] } },
 ]
 ```
+
+The component `id` (`porter`) appears in the asset filename and matrix id;
+`package` is the cargo package name.
 
 **Matrix expansion:** one row per target. Runner is picked
 automatically — `ubuntu-latest` for x86_64 Linux, `ubuntu-24.04-arm`
@@ -126,86 +131,97 @@ Container image built with `docker/build-push-action` and pushed to a
 registry. One image per artifact entry, multi-arch via `platforms`.
 
 ```toml
-[[artifacts]]
-kind = "oci-image"
-name = "api"                                      # matrix id
-context = "rust/"                                 # docker build context
-dockerfile = "rust/bins/api/Dockerfile"           # path to the Dockerfile
-registry = "ghcr.io/tractorbeamai/api"            # full registry path (no tag)
-platforms = ["linux/amd64", "linux/arm64"]        # default: amd64+arm64
+[registries.ghcr]
+kind = "oci"
+url  = "ghcr.io/tractorbeamai"
+auth = { type = "github-token" }
+
+[[group]]
+name = "default"
+components = [
+  { id = "api", type = "cargo-workspace", path = "Cargo.toml",
+    artifact = { kind = "oci-image",
+      context = "rust/",                      # docker build context
+      dockerfile = "rust/bins/api/Dockerfile",
+      registry = "ghcr",                      # a [registries] name, or a bare repo URL
+      platforms = ["linux/amd64", "linux/arm64"] } },
+]
 ```
 
-**Matrix expansion:** one row per artifact. Runner: `ubuntu-latest`.
+A named `oci` registry holds the host/org prefix; the image repo is
+`<url>/<id>` (here `ghcr.io/tractorbeamai/api`). A bare URL is used as the full
+repo as-is. The image tag is the bare `version` (e.g. `0.5.3`).
+
+**Matrix expansion:** one row per component. Runner: `ubuntu-latest`.
 
 **Workflow steps** (`if: matrix.kind == 'oci-image'`):
-1. `docker/setup-buildx-action@v3`
-2. `docker/build-push-action@v6` with `tags: <registry>:<vX.Y.Z>`,
+1. Registry login (see [Registries](#registries)).
+2. `docker/setup-buildx-action@v3`
+3. `docker/build-push-action@v6` with `tags: <repo>:<version>`,
    `provenance: false` (porter issues its own SLSA attestation instead
    of the buildkit-default one).
-3. When signing is enabled: `cosign sign` + `cosign attest --type
-   slsaprovenance1` against `<registry>@<digest>` (the digest from the
-   build-push step). See [Signing](#signing).
-
-**Authentication:** the reusable workflow logs in to `ghcr.io`
-automatically with the workflow token. For ECR, Docker Hub, or other
-registries, your calling workflow must obtain push credentials before
-invoking porter's `release.yml` — see [Signing](#signing) for details.
+4. When signing is enabled: `cosign sign` + `cosign attest --type
+   slsaprovenance1` against `<repo>@<digest>`. See [Signing](#signing).
 
 ## `helm-chart`
 
 Package a chart with `helm package` and push it to an OCI registry.
 
 ```toml
-[[artifacts]]
-kind = "helm-chart"
-name = "platform"                               # matrix id
-chart = "deploy/helm/platform"                  # path to the chart directory
-registry = "oci://ghcr.io/tractorbeamai/charts" # OCI registry (note `oci://` prefix)
+[[group]]
+name = "charts"
+components = [
+  { id = "platform", type = "helm-chart", path = "deploy/helm/platform/Chart.yaml",
+    artifact = { kind = "helm-chart",
+      chart = "deploy/helm/platform",                 # chart directory
+      registry = "oci://ghcr.io/tractorbeamai/charts" } },  # OCI registry, or a [registries] name
+]
 ```
 
-**Matrix expansion:** one row per artifact. Runner: `ubuntu-latest`.
+**Matrix expansion:** one row per component. Runner: `ubuntu-latest`.
 
 **Workflow steps** (`if: matrix.kind == 'helm-chart'`):
-1. `helm package <chart> --version <vX.Y.Z without 'v'> --app-version
-   <same> -d dist`
-2. `helm push dist/<chart>-<version>.tgz <registry>` — the pushed ref
+1. Registry login (see [Registries](#registries)).
+2. `helm package <chart> --version <version> --app-version <same> -d dist`
+   (the matrix `version` is already the bare `X.Y.Z` helm expects).
+3. `helm push dist/<chart>-<version>.tgz <registry>` — the pushed ref
    and digest are parsed from helm's output.
-3. When signing is enabled: `cosign sign` + `cosign attest --type
+4. When signing is enabled: `cosign sign` + `cosign attest --type
    slsaprovenance1` against the pushed `<repo>@<digest>` (a chart in an
    OCI registry is just another OCI artifact). See [Signing](#signing).
 
-**Note:** `helm package --version` rejects a leading `v`, so the
-workflow strips it (`version="${TAG#v}"`). Your chart's `Chart.yaml`
-should be listed under `[[versioned_files]]` with `type =
-"helm-chart"` so it's bumped in lockstep with the tag — that's
-porter's whole point.
+**Note:** the same component carries the version source (`type = "helm-chart"`
+rewriting `Chart.yaml`) and the artifact — one component, bumped and published
+in lockstep. That's porter's whole point.
 
 ## `npm-package`
 
 Publish a JavaScript package to a registry via `npm publish`.
 
 ```toml
-[[artifacts]]
-kind = "npm-package"
-name = "sdk"                                # matrix id
-path = "ts/packages/sdk"                    # directory containing package.json
-registry = "https://registry.npmjs.org"     # default; pass a custom URL otherwise
+[[group]]
+name = "sdk"
+components = [
+  { id = "sdk", type = "package-json", path = "ts/packages/sdk/package.json",
+    artifact = { kind = "npm-package",
+      path = "ts/packages/sdk",                 # directory containing package.json
+      registry = "https://registry.npmjs.org" } },  # default; a [registries] name for a private one
+]
 ```
 
-**Matrix expansion:** one row per artifact. Runner: `ubuntu-latest`.
+**Matrix expansion:** one row per component. Runner: `ubuntu-latest`.
 
 **Workflow steps** (`if: matrix.kind == 'npm-package'`):
-1. Write a `.npmrc` in `path` that auths against `registry` using the
-   `NPM_TOKEN` secret.
+1. Write a `.npmrc` in `path` that auths against `registry`.
 2. `npm publish --access public` from `path`.
 
-**Authentication:** the calling workflow must pass an `NPM_TOKEN`
-secret (porter's release.yml reads it via
-`secrets.NPM_TOKEN`). If `NPM_TOKEN` isn't set the step errors loudly
-rather than silently producing an unauthenticated publish.
+**Authentication:** a registry with `token` auth reads its token from the
+`registry-auth` JSON secret; the default registry (no declared auth) falls
+back to the `npm-token` secret. If neither resolves the step errors loudly
+rather than publishing unauthenticated. See [Registries](#registries).
 
-The `package.json` should be listed under `[[versioned_files]]` so
-its version moves in lockstep with the tag.
+The same component carries the version source (`package-json` rewriting
+`package.json`) and the artifact, so its version and publish move together.
 
 ## `python-wheel`
 
@@ -215,13 +231,16 @@ not in scope yet — wheels land on the release page where downstream
 infrastructure can pick them up.
 
 ```toml
-[[artifacts]]
-kind = "python-wheel"
-name = "client"           # matrix id
-path = "py/client"        # directory containing pyproject.toml
+[[group]]
+name = "py"
+components = [
+  { id = "client", type = "regex", path = "py/client/pyproject.toml",
+    pattern = '(?m)^version = "(?P<version>[^"]+)"',
+    artifact = { kind = "python-wheel", path = "py/client" } },
+]
 ```
 
-**Matrix expansion:** one row per artifact. Runner: `ubuntu-latest`.
+**Matrix expansion:** one row per component. Runner: `ubuntu-latest`.
 
 **Workflow steps** (`if: matrix.kind == 'python-wheel'`):
 1. `pipx install maturin`
@@ -230,41 +249,68 @@ path = "py/client"        # directory containing pyproject.toml
 The wheel ends up in `dist/` and is uploaded with the rest of the
 release assets.
 
-## Mixing kinds in one repo
+## Registries
 
-A polyglot repo will typically declare several entries:
+`oci-image`, `helm-chart`, and `npm-package` publish to a registry. The
+`registry` field is either a key into `[registries]` or a bare URL (used as-is,
+anonymous):
 
 ```toml
-[[artifacts]]
-kind = "cli-binary"
-name = "mytool"
-package = "mytool-cli"
-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+[registries.ghcr]
+kind = "oci"                       # oci | oci-helm | npm | pypi
+url  = "ghcr.io/acme"
+auth = { type = "github-token" }   # GITHUB_TOKEN — the common ghcr.io case
 
-[[artifacts]]
-kind = "oci-image"
-name = "api"
-context = "."
-dockerfile = "Dockerfile"
-registry = "ghcr.io/example/api"
-
-[[artifacts]]
-kind = "helm-chart"
-name = "platform"
-chart = "deploy/helm/platform"
-registry = "oci://ghcr.io/example/charts"
+[registries.dockerhub]
+kind = "oci"
+url  = "docker.io/acme"
+auth = { type = "basic", username_secret = "DH_USER", password_secret = "DH_PAT" }
 ```
 
-The matrix expands to four rows (two `cli-binary` targets + one
-`oci-image` + one `helm-chart`); each lands on its appropriate runner
-and runs its kind-specific step block. They run in parallel because
-the matrix is `fail-fast: false`.
+`auth.type` is `none`, `github-token`, `basic` (username/password), or `token`
+(a single bearer token). Credentials are referenced by **secret name**:
+GitHub Actions can't index the `secrets` context by a dynamic key, so the
+release workflow reads them from one `registry-auth` JSON secret —
+`{"DH_USER": "...", "DH_PAT": "..."}` — that the caller passes. `github-token`
+auth needs no `registry-auth` entry (it uses the workflow's token). porter
+validates that a named registry's `kind` matches the artifact that references
+it (an `oci-image` can't point at an `npm` registry).
+
+## Mixing kinds in one repo
+
+A polyglot repo declares several components across groups — version lines that
+move independently:
+
+```toml
+[[group]]
+name = "app"
+components = [
+  { id = "mytool", type = "cargo-workspace", path = "Cargo.toml", tag_prefix = "v",
+    artifact = { kind = "cli-binary", package = "mytool-cli",
+      targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"] } },
+  { id = "api", artifact = { kind = "oci-image", context = ".",
+    dockerfile = "Dockerfile", registry = "ghcr.io/example/api" } },
+]
+
+[[group]]
+name = "charts"
+components = [
+  { id = "platform", type = "helm-chart", path = "deploy/helm/platform/Chart.yaml",
+    artifact = { kind = "helm-chart", chart = "deploy/helm/platform",
+      registry = "oci://ghcr.io/example/charts" } },
+]
+```
+
+The matrix expands to four rows (two `cli-binary` targets + one `oci-image` +
+one `helm-chart`); each lands on its appropriate runner and runs its
+kind-specific step block, in parallel (`fail-fast: false`). The `app` and
+`charts` groups version and tag independently.
 
 ## Extending with a new kind
 
 Adding a new artifact kind is three changes:
 
-1. New variant in `ArtifactConfig` ([crates/porter-core/src/config.rs](../crates/porter-core/src/config.rs)).
+1. New variant in `Artifact` ([crates/porter-core/src/config.rs](../crates/porter-core/src/config.rs)).
 2. New match arm in `build_matrix` ([crates/porter-core/src/matrix.rs](../crates/porter-core/src/matrix.rs)).
 3. New step block in [release.yml](../.github/workflows/release.yml)
    gated on `matrix.kind == '<new-kind>'`.
