@@ -150,6 +150,10 @@
               "type": "array",
               "items": { "type": "string" },
               "default": ["linux/amd64", "linux/arm64"]
+            },
+            "publish": {
+              "type": "string",
+              "description": "Optional repo-owned publish command. When set, the release workflow runs it INSTEAD of docker/build-push-action, with PORTER_IMAGE/PORTER_VERSION/PORTER_TAG/PORTER_CONTEXT/PORTER_DOCKERFILE/PORTER_PLATFORMS/PORTER_REGISTRY in the environment (plus any build-secrets, and an optional PORTER_DIGEST_FILE to write the pushed digest to). The command must build AND push to $PORTER_IMAGE; the repo owns build args, secrets, and stages. Registry auth is still driven by the registry's declared kind."
             }
           }
         },

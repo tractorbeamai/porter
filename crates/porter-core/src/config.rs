@@ -205,6 +205,15 @@ pub enum Artifact {
         registry: String,
         #[serde(default = "default_platforms")]
         platforms: Vec<String>,
+        /// Optional repo-owned publish command. When set, the release workflow
+        /// runs it INSTEAD of `docker/build-push-action`, with the image ref and
+        /// build context exposed as `PORTER_*` env vars (and any `build-secrets`
+        /// exported). The repo owns build args, secrets, and stages; the command
+        /// must build *and* push to `$PORTER_IMAGE`. porter resolves the pushed
+        /// digest (or reads `$PORTER_DIGEST_FILE`) and signs it — auth is still
+        /// driven by the registry's declared kind, not the command.
+        #[serde(default)]
+        publish: Option<String>,
     },
     HelmChart {
         chart: PathBuf,

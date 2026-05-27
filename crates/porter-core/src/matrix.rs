@@ -68,6 +68,10 @@ pub struct MatrixRow {
     pub dockerfile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platforms: Option<String>,
+    /// Repo-owned publish command for an `oci-image`. When set, `release.yml`
+    /// runs it instead of `docker/build-push-action` (build + push).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chart: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,6 +119,7 @@ impl MatrixRow {
             context: None,
             dockerfile: None,
             platforms: None,
+            publish: None,
             chart: None,
             path: None,
             package: None,
@@ -208,6 +213,7 @@ pub fn build_matrix(config: &Config, versions: &BTreeMap<String, Version>) -> Ve
                     dockerfile,
                     registry,
                     platforms,
+                    publish,
                 } => {
                     // A named registry holds the org/host prefix; the image repo
                     // is `<url>/<id>`. A bare URL is used as the full repo.
@@ -222,6 +228,7 @@ pub fn build_matrix(config: &Config, versions: &BTreeMap<String, Version>) -> Ve
                     r.dockerfile = Some(dockerfile.display().to_string());
                     r.registry = Some(repo);
                     r.platforms = Some(platforms.join(","));
+                    r.publish.clone_from(publish);
                     r.runner = Some("ubuntu-latest".into());
                     rows.push(r.with_signing(&signing).with_auth(auth));
                 }
@@ -501,6 +508,45 @@ mod tests {
         assert_eq!(row.kind, "helm-chart");
         assert_eq!(row.auth_kind, "aws-ecr");
         assert_eq!(row.region.as_deref(), Some("us-east-1"));
+    }
+
+    #[test]
+    fn oci_image_publish_command_threads_onto_row() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [[group]]
+            name = "default"
+            components = [
+              { id = "api", type = "cargo-workspace", path = "Cargo.toml",
+                artifact = { kind = "oci-image", context = ".", dockerfile = "rust/Dockerfile",
+                  registry = "ghcr.io/example/api",
+                  publish = "docker buildx build --push --build-arg BIN=api -t $PORTER_IMAGE ." } },
+            ]
+        "#})
+        .unwrap();
+        let m = build_matrix(&cfg, &versions(&[("default", "1.0.0")]));
+        assert_eq!(
+            m[0].publish.as_deref(),
+            Some("docker buildx build --push --build-arg BIN=api -t $PORTER_IMAGE .")
+        );
+    }
+
+    #[test]
+    fn oci_image_without_publish_command_omits_field() {
+        let cfg = Config::from_toml(indoc! {r#"
+            [[group]]
+            name = "default"
+            components = [
+              { id = "api", type = "cargo-workspace", path = "Cargo.toml",
+                artifact = { kind = "oci-image", context = ".", dockerfile = "Dockerfile",
+                  registry = "ghcr.io/example/api" } },
+            ]
+        "#})
+        .unwrap();
+        let m = build_matrix(&cfg, &versions(&[("default", "1.0.0")]));
+        assert!(m[0].publish.is_none());
+        // Absent from JSON so the workflow's `!matrix.publish` gate fires.
+        let v = render_for_actions(&m);
+        assert!(v["include"][0].get("publish").is_none());
     }
 
     #[test]

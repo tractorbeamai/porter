@@ -50,6 +50,14 @@ on:
           `basic`/`token` auth names the keys it needs here. Required only if
           a referenced registry uses basic/token auth.
         required: false
+      build-secrets:
+        description: |
+          JSON object mapping name → value, exported as env vars to an
+          `oci-image`'s repo-owned `publish` command (so it can pass them as
+          `--build-arg` or buildx `--secret`). e.g.
+          `{"FONTAWESOME_NPM_AUTH_TOKEN":"..."}`. Required only if a `publish`
+          command references such a secret.
+        required: false
 
 permissions:
   contents: read
@@ -311,9 +319,10 @@ jobs:
             echo "published=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Default build: no repo-owned `publish` command on the row.
       - name: Build & push image
         id: build_image
-        if: matrix.kind == 'oci-image' && steps.image_state.outputs.published != 'true'
+        if: matrix.kind == 'oci-image' && !matrix.publish && steps.image_state.outputs.published != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ matrix.context }}
@@ -323,13 +332,59 @@ jobs:
           tags: ${{ matrix.registry }}:${{ matrix.version }}
           provenance: false  # porter issues its own SLSA attestation below
 
+      # Repo-owned publish: the component declared a `publish` command, so run it
+      # instead of build-push-action. The repo owns build args, secrets, and
+      # stages; porter exposes the image ref + context as PORTER_* env and any
+      # `build-secrets` entries as env vars. The command must build AND push to
+      # $PORTER_IMAGE; auth is already done (registry login above, driven by the
+      # registry's auth kind). porter then resolves the pushed digest for signing
+      # — the command may instead write it to $PORTER_DIGEST_FILE.
+      - name: Build & push image (repo-owned command)
+        id: build_image_custom
+        if: matrix.kind == 'oci-image' && matrix.publish && steps.image_state.outputs.published != 'true'
+        env:
+          PUBLISH: ${{ matrix.publish }}
+          BUILD_SECRETS: ${{ secrets.build-secrets }}
+          PORTER_IMAGE: ${{ matrix.registry }}:${{ matrix.version }}
+          PORTER_VERSION: ${{ matrix.version }}
+          PORTER_TAG: ${{ matrix.tag }}
+          PORTER_CONTEXT: ${{ matrix.context }}
+          PORTER_DOCKERFILE: ${{ matrix.dockerfile }}
+          PORTER_PLATFORMS: ${{ matrix.platforms }}
+          PORTER_REGISTRY: ${{ matrix.registry }}
+        run: |
+          set -euo pipefail
+          # The command MAY write the pushed digest here; else porter resolves it
+          # from the registry below.
+          PORTER_DIGEST_FILE="$(mktemp)"
+          export PORTER_DIGEST_FILE
+          # Export each build-secrets entry as an env var the command can read
+          # (e.g. as a --build-arg or buildx --secret). Done inline rather than
+          # via GITHUB_ENV so the values don't outlive this step. Actions masks
+          # secret values in logs.
+          if [[ -n "$BUILD_SECRETS" ]]; then
+            while IFS= read -r key; do
+              [[ -z "$key" ]] && continue
+              export "$key=$(jq -r --arg k "$key" '.[$k]' <<< "$BUILD_SECRETS")"
+            done < <(jq -r 'keys[]' <<< "$BUILD_SECRETS")
+          fi
+          bash -c "$PUBLISH"
+          # Prefer a digest the command wrote; else resolve what it pushed.
+          if [[ -s "$PORTER_DIGEST_FILE" ]]; then
+            digest=$(tr -d '[:space:]' < "$PORTER_DIGEST_FILE")
+          else
+            digest=$(docker buildx imagetools inspect "$PORTER_IMAGE" --format '{{.Manifest.Digest}}')
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
       - name: Sign + attest image
         if: matrix.kind == 'oci-image' && matrix.sign == 'true'
         env:
           TAG: ${{ matrix.tag }}
           REGISTRY: ${{ matrix.registry }}
-          # Built this run, or resolved from the already-published image.
-          DIGEST: ${{ steps.build_image.outputs.digest || steps.image_state.outputs.digest }}
+          # Built this run (default or repo-owned command), or resolved from
+          # the already-published image.
+          DIGEST: ${{ steps.build_image.outputs.digest || steps.build_image_custom.outputs.digest || steps.image_state.outputs.digest }}
           FULCIO_URL: ${{ matrix.fulcio_url }}
           REKOR_URL: ${{ matrix.rekor_url }}
         run: |
