@@ -15,7 +15,7 @@ porter-core = { path = "crates/porter-core" }
 
 anyhow = "=1.0.102"
 serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.149"
+serde_json = "=1.0.150"
 # Pin without the `+build` metadata: cargo ignores metadata in a version
 # req (warning otherwise) but still resolves to the published build in the
 # lockfile.
