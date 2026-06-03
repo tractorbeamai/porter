@@ -44,7 +44,7 @@ jobs:
       tag: ${{ steps.tag.outputs.tag }}
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
           persist-credentials: false
@@ -86,7 +86,7 @@ jobs:
       # env to keep run blocks free of template expansion.
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.plan.outputs.tag }}
           persist-credentials: false
@@ -116,7 +116,7 @@ jobs:
       contents: write
       id-token: write  # OIDC token for cosign keyless signing
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.plan.outputs.tag }}
           # This job writes no git refs — release create/upload go through the
@@ -217,7 +217,7 @@ jobs:
     permissions:
       contents: read # checkout only; the App token below carries its own write scope
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ needs.plan.outputs.tag }}
           # Full history so `git tag -f "$major" "$TAG"` can resolve the tag.
