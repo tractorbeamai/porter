@@ -57,6 +57,8 @@ options if you need supply-chain immutability.
   failure modes that actually happen.
 - **[Artifact kinds](docs/artifact-kinds.md)** — every `artifact`
   kind, what it expects, and what's implemented today.
+- **[Signing & trust model](docs/signing-and-trust.md)** — what a
+  signature proves, who holds the signing identity, and owning your build.
 - **[JSON schemas](docs/json-schemas.md)** — exact shapes of
   `porter status --json` and `porter matrix --compact`.
 - **[Phases](docs/phases.md)** — the A/B/C/D/E plan referenced in
@@ -207,7 +209,11 @@ so the job needs push credentials: the reusable workflow logs in to
 login step in your calling workflow. See
 [`docs/artifact-kinds.md`](docs/artifact-kinds.md#signing) for
 verification commands and the admission-policy example in
-[`policy/`](policy/cluster-image-policy.example.yaml).
+[`policy/`](policy/cluster-image-policy.example.yaml). The signing identity
+is the workflow that runs cosign — the reusable workflow signs as porter, or
+compose `porter-sign` to sign under your own repo's identity;
+[`docs/signing-and-trust.md`](docs/signing-and-trust.md) covers the trust
+model and both paths.
 
 [cosign]: https://docs.sigstore.dev/cosign/overview/
 

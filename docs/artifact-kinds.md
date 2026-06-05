@@ -70,6 +70,15 @@ the registry, so the job needs push credentials — declare them on the
 `[registries]` entry's `auth` (see [Registries](#registries)), including
 `aws-ecr` for AWS ECR. The reusable workflow logs in for you.
 
+**Who signs — and why it matters.** cosign keyless binds the signature to
+the workflow identity that runs it. Through the reusable workflow that is
+*porter's* `release.yml`; compose the
+[`porter-sign`](../actions/porter-sign) action in your own job and signatures
+carry *your* repo's identity instead. The admission policy pins an org-wide
+subject and relies on porter's SLSA predicate (`source`, `builder`) for the
+real guarantees — see [Signing & trust model](./signing-and-trust.md) for the
+full picture and when to own your own build/sign job.
+
 [cosign]: https://docs.sigstore.dev/cosign/overview/
 [SLSA Build Provenance v1]: https://slsa.dev/spec/v1.0/provenance
 [policy]: ../policy/cluster-image-policy.example.yaml
@@ -224,6 +233,14 @@ values are masked in logs.
 secrets:
   build-secrets: ${{ toJSON(secrets) }}   # or a curated subset
 ```
+
+This `build-secrets` bag is the **batteries-included** path: the command runs
+inside porter's job, so the secret has to cross the reusable-workflow
+boundary. If you'd rather not hand porter your build secrets at all, own the
+build in your own job — pass secrets natively (buildx `--secret`, your own
+`--build-arg`) — and call [`porter-sign`](../actions/porter-sign) on the
+result. There the build and its secrets never touch porter. See
+[Signing & trust model](./signing-and-trust.md).
 
 Idempotency, registry login, and signing all work the same for a
 repo-owned publish command as for the default build.

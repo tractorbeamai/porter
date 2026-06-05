@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Mock `git` for porter-tag bats tests. `rev-parse refs/tags/<t>` succeeds only
+# for tags listed in $STUB_EXISTING_TAGS (space-separated); everything else
+# succeeds and is logged.
+set -euo pipefail
+echo "git $*" >> "$STUB_LOG"
+case "${1:-}" in
+  rev-parse)
+    tag="${2#refs/tags/}"
+    for e in ${STUB_EXISTING_TAGS:-}; do
+      [[ "$e" == "$tag" ]] && exit 0
+    done
+    exit 1
+    ;;
+esac
+exit 0

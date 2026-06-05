@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Mock `gh` for porter-sign bats tests: log the invocation and succeed.
+set -euo pipefail
+echo "gh $*" >> "$STUB_LOG"
+exit 0

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Mock `gh` for porter-manifest bats tests. `release view` echoes the asset
+# names in $STUB_ASSETS (the script greps them); `release download` writes a
+# canned file for the requested --pattern into --dir; `release upload` logs.
+set -euo pipefail
+echo "gh $*" >> "$STUB_LOG"
+case "${1:-} ${2:-}" in
+  "release view")
+    echo "${STUB_ASSETS:-}"
+    ;;
+  "release download")
+    pattern="" dir=""
+    while (($#)); do
+      case "$1" in
+        --pattern) pattern="$2"; shift 2 ;;
+        --dir) dir="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    mkdir -p "$dir"
+    case "$pattern" in
+      checksums-*) printf 'deadbeef  artifact.tar.gz\n' > "$dir/$pattern" ;;
+      published-*) printf '{"kind":"oci-image","name":"api","version":"0.5.3","digest":"sha256:abc"}\n' > "$dir/$pattern" ;;
+      *) : > "$dir/$pattern" ;;
+    esac
+    ;;
+esac
+exit 0

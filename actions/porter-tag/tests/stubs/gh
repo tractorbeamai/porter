@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Mock `gh` for porter-tag bats tests. `release view <t>` succeeds only for tags
+# listed in $STUB_EXISTING_RELEASES (space-separated); `release create` is
+# logged and succeeds.
+set -euo pipefail
+echo "gh $*" >> "$STUB_LOG"
+case "${1:-} ${2:-}" in
+  "release view")
+    tag="${3:-}"
+    for e in ${STUB_EXISTING_RELEASES:-}; do
+      [[ "$e" == "$tag" ]] && exit 0
+    done
+    exit 1
+    ;;
+esac
+exit 0

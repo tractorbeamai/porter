@@ -1,6 +1,7 @@
 name: porter / release
 
-# Reusable workflow for consumer repos. The flow:
+# Reusable workflow for consumer repos — the batteries-included release path.
+# The flow:
 #
 #   1. tag         — push every pending component tag (porter App identity)
 #                    and open a GitHub Release per tag.
@@ -8,6 +9,15 @@ name: porter / release
 #   3. build (×N)  — fan out across artifact rows; each publishes under its
 #                    own component tag/version and logs in to its own registry.
 #   4. publish     — merge per-row checksums into each release.
+#
+# This workflow signs under *porter's* identity (the cert subject is this file).
+# Repos that need to own their build — custom build args, build secrets, multi-
+# stage Dockerfiles — should instead compose the `porter-tag`, `porter-sign`,
+# and `porter-manifest` composite actions in their own jobs: the build runs
+# natively (no `build-secrets` bag crosses a reusable-workflow boundary) and
+# `cosign` runs in the consumer's job, so signatures carry the consumer's
+# identity. The org-wide admission policy + porter's SLSA predicate make both
+# paths trustworthy. See docs/signing-and-trust.md.
 #
 # porter cuts one tag per published component (`<id>/v<version>`, or a custom
 # `tag_prefix`), so a release may carry several tags at independent versions —

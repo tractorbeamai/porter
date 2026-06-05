@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Mock `porter` for porter-sign bats tests: log the invocation, and emit a
+# plausible payload on stdout for the two subcommands sign.sh consumes
+# (`attest --emit predicate` → a bare SLSA predicate; `release record` → a
+# record object). The script redirects these to files, so the content only
+# needs to be valid JSON.
+set -euo pipefail
+echo "porter $*" >> "$STUB_LOG"
+case "${1:-} ${2:-}" in
+  "attest --emit"* | "attest "*)
+    echo '{"buildDefinition":{},"runDetails":{"builder":{"id":"https://github.com/tractorbeamai/porter"}}}'
+    ;;
+  "release record")
+    echo '{"recorded":true}'
+    ;;
+esac
+exit 0
