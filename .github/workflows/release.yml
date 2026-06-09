@@ -190,7 +190,7 @@ jobs:
       # a repo-defined publish command still gets a logged-in context.
       - name: Configure AWS credentials (aws-ecr)
         if: (matrix.kind == 'oci-image' || matrix.kind == 'helm-chart') && matrix.auth_kind == 'aws-ecr'
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6
         with:
           role-to-assume: ${{ matrix.role_arn }}
           aws-region: ${{ matrix.region }}
